@@ -1,0 +1,153 @@
+name: Convert to big-endian GGUF
+run-name: "BE-GGUF: ${{ inputs.model }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Hugging Face model tag, e.g. Qwen/Qwen3-8B or unsloth/Qwen3-8B-GGUF (optional :QUANT narrows a GGUF repo)"
+        required: true
+        type: string
+      quants:
+        description: "Output types for safetensors models (ignored for GGUF repos)"
+        type: string
+        default: F32,F16,BF16,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K,Q4_K,Q5_K,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE
+      hf_namespace:
+        description: "HF user/org to upload to (default: HF_NAMESPACE variable, else the HF_TOKEN owner)"
+        type: string
+        default: ""
+      runner:
+        description: "Runner size (auto = smallest Blacksmith ARM runner with enough disk)"
+        type: choice
+        options: [auto, 2vcpu, 4vcpu, 8vcpu, 16vcpu, 32vcpu]
+        default: auto
+      private:
+        description: "Create the output repo as private (only when it doesn't exist yet)"
+        type: boolean
+        default: false
+      llama_cpp_ref:
+        description: "llama.cpp branch, tag or commit"
+        type: string
+        default: master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: convert-${{ inputs.model }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    outputs:
+      pipeline: ${{ steps.plan.outputs.pipeline }}
+      repo_id: ${{ steps.plan.outputs.repo_id }}
+      base_name: ${{ steps.plan.outputs.base_name }}
+      quant_tag: ${{ steps.plan.outputs.quant_tag }}
+      out_repo: ${{ steps.plan.outputs.out_repo }}
+      quants: ${{ steps.plan.outputs.quants }}
+      runner: ${{ steps.plan.outputs.runner }}
+      need_bytes: ${{ steps.plan.outputs.need_bytes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+          activate-environment: "true"
+          enable-cache: "false"
+
+      - run: uv pip install 'huggingface_hub[hf_xet]'
+
+      - id: plan
+        name: Inspect model and pick runner
+        run: python scripts/plan.py
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_NAMESPACE: ${{ vars.HF_NAMESPACE }}
+          HF_HUB_DISABLE_PROGRESS_BARS: "1"
+          INPUT_MODEL: ${{ inputs.model }}
+          INPUT_QUANTS: ${{ inputs.quants }}
+          INPUT_HF_NAMESPACE: ${{ inputs.hf_namespace }}
+          INPUT_RUNNER: ${{ inputs.runner }}
+
+  safetensors:
+    name: Safetensors
+    needs: plan
+    if: needs.plan.outputs.pipeline == 'safetensors'
+    uses: ./.github/workflows/safetensors.yml
+    with:
+      runner: ${{ needs.plan.outputs.runner }}
+      model: ${{ needs.plan.outputs.repo_id }}
+      out_repo: ${{ needs.plan.outputs.out_repo }}
+      quants: ${{ needs.plan.outputs.quants }}
+      need_bytes: ${{ needs.plan.outputs.need_bytes }}
+      private: ${{ inputs.private }}
+      llama_cpp_ref: ${{ inputs.llama_cpp_ref }}
+    secrets:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+  gguf:
+    name: GGUF
+    needs: plan
+    if: needs.plan.outputs.pipeline == 'gguf'
+    uses: ./.github/workflows/gguf.yml
+    with:
+      runner: ${{ needs.plan.outputs.runner }}
+      model: ${{ needs.plan.outputs.repo_id }}
+      tag: ${{ needs.plan.outputs.quant_tag }}
+      out_repo: ${{ needs.plan.outputs.out_repo }}
+      need_bytes: ${{ needs.plan.outputs.need_bytes }}
+      private: ${{ inputs.private }}
+      llama_cpp_ref: ${{ inputs.llama_cpp_ref }}
+    secrets:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+  readme:
+    name: Save model card
+    needs: [plan, safetensors, gguf]
+    # Also after partial failures: the pipelines still publish the card for whatever was uploaded.
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: card
+        name: Download model card
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: model-card
+          path: ${{ runner.temp }}/card
+
+      - name: Commit <model>/README.md
+        if: steps.card.outcome == 'success'
+        env:
+          MODEL_DIR: ${{ needs.plan.outputs.base_name }}
+          SOURCE: ${{ needs.plan.outputs.repo_id }}
+        run: |
+          mkdir -p "$MODEL_DIR"
+          cp "$RUNNER_TEMP/card/README.md" "$MODEL_DIR/README.md"
+          git add "$MODEL_DIR/README.md"
+          if git diff --cached --quiet; then
+            echo "$MODEL_DIR/README.md is unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update $MODEL_DIR model card" -m "Source: https://huggingface.co/$SOURCE"
+          # Runs for other models may push at the same time; they touch other folders, so rebase and retry.
+          for attempt in 1 2 3 4 5; do
+            git push origin "HEAD:$GITHUB_REF_NAME" && exit 0
+            sleep $((attempt * 5))
+            git pull --rebase origin "$GITHUB_REF_NAME"
+          done
+          exit 1

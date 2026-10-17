@@ -1,0 +1,93 @@
+name: GGUF pipeline
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label
+        type: string
+        required: true
+      model:
+        description: Source repo id
+        type: string
+        required: true
+      tag:
+        description: Optional quant tag to narrow the files
+        type: string
+        default: ""
+      out_repo:
+        description: Destination repo id
+        type: string
+        required: true
+      need_bytes:
+        description: Planned disk need in bytes
+        type: string
+        default: "0"
+      private:
+        type: boolean
+        default: false
+      llama_cpp_ref:
+        type: string
+        default: master
+    secrets:
+      HF_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  convert:
+    name: ${{ inputs.model }} → ${{ inputs.out_repo }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 1440
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HF_XET_HIGH_PERFORMANCE: "1"
+      HF_XET_CHUNK_CACHE_SIZE_BYTES: "0"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - id: llama
+        uses: ./.github/actions/setup-llama-cpp
+        with:
+          ref: ${{ inputs.llama_cpp_ref }}
+          full: "false"
+
+      - name: Show resources
+        run: |
+          nproc
+          free -h
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Byte-swap and upload every GGUF
+        env:
+          MODEL: ${{ inputs.model }}
+          TAG: ${{ inputs.tag }}
+          OUT_REPO: ${{ inputs.out_repo }}
+          NEED_BYTES: ${{ inputs.need_bytes }}
+          PRIVATE_FLAG: ${{ inputs.private && '--private' || '' }}
+          LLAMA_CPP: ${{ steps.llama.outputs.path }}
+        run: |
+          # shellcheck disable=SC2086
+          python scripts/pipeline_gguf.py \
+            --model "$MODEL" \
+            --tag "$TAG" \
+            --out-repo "$OUT_REPO" \
+            --llama-cpp "$LLAMA_CPP" \
+            --work "$GITHUB_WORKSPACE/work" \
+            --need-bytes "$NEED_BYTES" \
+            $PRIVATE_FLAG
+
+      - name: Save model card for this repo
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: model-card
+          path: ${{ github.workspace }}/work/card/README.md
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,86 @@
+name: Set up llama.cpp
+description: >
+  Check out ggml-org/llama.cpp, install the Python deps, and (full mode) build
+  llama-quantize + llama-gguf-split.
+
+inputs:
+  ref:
+    description: llama.cpp branch, tag or commit
+    default: master
+  full:
+    description: >
+      "true": full checkout, convert_hf_to_gguf.py deps and tool build (safetensors pipeline).
+      "false": gguf-py only (GGUF pipeline).
+    default: "false"
+
+outputs:
+  path:
+    description: llama.cpp checkout
+    value: ${{ github.workspace }}/llama.cpp
+  bin:
+    description: Directory containing llama-quantize and llama-gguf-split (full mode)
+    value: ${{ github.workspace }}/llama-bin
+
+runs:
+  using: composite
+  steps:
+    - name: Check out llama.cpp
+      uses: actions/checkout@v7
+      with:
+        repository: ggml-org/llama.cpp
+        ref: ${{ inputs.ref }}
+        path: llama.cpp
+        sparse-checkout: ${{ inputs.full != 'true' && 'gguf-py' || '' }}
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: astral-sh/setup-uv@v10
+      with:
+        python-version: "3.12"
+        activate-environment: "true"
+        enable-cache: "false"
+
+    - name: Install Python deps
+      shell: bash
+      env:
+        FULL: ${{ inputs.full }}
+      run: |
+        # Local gguf-py (newest quant types + vectorized endian script) instead of the PyPI release.
+        if [ "$FULL" = "true" ]; then
+          uv pip install --index-strategy unsafe-best-match \
+            -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt \
+            'huggingface_hub[hf_xet]' ./llama.cpp/gguf-py
+        else
+          uv pip install 'huggingface_hub[hf_xet]' ./llama.cpp/gguf-py
+        fi
+
+    - name: Resolve llama.cpp commit
+      id: sha
+      if: inputs.full == 'true'
+      shell: bash
+      run: echo "sha=$(git -C llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache llama.cpp tools
+      id: cache
+      if: inputs.full == 'true'
+      uses: actions/cache@v6
+      with:
+        path: llama-bin
+        key: llama-bin-${{ runner.os }}-${{ runner.arch }}-${{ steps.sha.outputs.sha }}
+
+    - name: Build llama-quantize and llama-gguf-split
+      if: inputs.full == 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cmake -S llama.cpp -B llama.cpp/build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DGGML_NATIVE=OFF \
+          -DLLAMA_BUILD_TESTS=OFF \
+          -DLLAMA_BUILD_EXAMPLES=OFF \
+          -DLLAMA_BUILD_SERVER=OFF \
+          -DLLAMA_BUILD_APP=OFF \
+          -DLLAMA_OPENSSL=OFF
+        cmake --build llama.cpp/build --config Release -j "$(nproc)" --target llama-quantize llama-gguf-split
+        mkdir -p llama-bin
+        cp llama.cpp/build/bin/llama-quantize llama.cpp/build/bin/llama-gguf-split llama-bin/
