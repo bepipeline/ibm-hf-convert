@@ -20,12 +20,30 @@ Go to **Actions → Convert to big-endian GGUF → Run workflow**, then enter a 
 | Input | Default | Notes |
 |---|---|---|
 | `model` | — | `Qwen/Qwen3-8B` (safetensors) or `unsloth/Qwen3-8B-GGUF` (GGUF). Add `:Q4_K_M` to a GGUF repo to convert only that quant. |
-| `quants` | `F32,F16,BF16,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K_S,Q3_K_M,Q3_K_L,Q4_K_S,Q4_K_M,Q5_K_S,Q5_K_M,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE` | Safetensors models only. |
+| `quants` | `NATIVE,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K_S,Q3_K_M,Q3_K_L,Q4_K_S,Q4_K_M,Q5_K_S,Q5_K_M,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE` | Safetensors models only. `NATIVE` is the source's own float type (see below). |
 | `hf_namespace` | `HF_NAMESPACE` variable, else the token owner | User or org to upload to. |
 | `runner` | `auto` | Sets the runner size. `auto` picks one as described in [Runner sizing](#runner-sizing). |
 | `target_minutes` | `15` | Used by `auto`: the time budget for quantizing. Raise it to use smaller, cheaper runners. |
 | `private` | `false` | Applies only when the output repo is created. |
 | `llama_cpp_ref` | `latest` | `latest` or a release tag like `b11718` uses the prebuilt ARM tools from that release. A branch or commit is built from source, which takes about 2.5 min longer. |
+
+### Float outputs: `NATIVE`
+
+`NATIVE` in the quant list stands for the float type that holds most of the source's weights: BF16 for a
+BF16-trained model, F16 for an F16 one, F32 for an F32 one. FP8 or integer sources get BF16. For a BF16 model,
+the other two formats add nothing:
+- **F32** stores the same values at twice the size, and decodes more slowly.
+- **F16** has less exponent range than BF16, so the conversion can lose values.
+
+On a z17 (2 vCPU, Granite-4.0-H-1B) BF16 was also faster than F16:
+
+| Format | Prompt (pp128) | Generation (tg32) |
+|---|---|---|
+| BF16 | 15.0 tok/s | 1.95 tok/s |
+| F16 | 8.9 tok/s | 1.36 tok/s |
+
+F32 couldn't be measured fairly: the 5.4 GiB file is larger than that VM's 4 GB of RAM. `F16` and `F32` can
+still be requested explicitly.
 
 ### What happens
 
@@ -35,7 +53,7 @@ Go to **Actions → Convert to big-endian GGUF → Run workflow**, then enter a 
    - It estimates disk need and picks the smallest runner with enough disk.
 2. **Safetensors pipeline:**
    1. Download the model.
-   2. If any source tensor is not BF16, make F32/F16 directly from the safetensors.
+   2. If F32/F16 were requested and any source tensor is not BF16, make them directly from the safetensors.
    3. Make a little-endian BF16 intermediate. For vision or audio models (`vision_config`/`audio_config` in
       `config.json`), also export an F16 projector, `mmproj-<Model>-BE-F16.gguf`. Then delete the safetensors.
    4. Run `llama-quantize` once per remaining type. If every source tensor is BF16, this includes F32 and F16:
@@ -83,6 +101,14 @@ the GitHub copy renders the same way. It runs even if some quants failed, since 
 still lists everything that was uploaded. It needs push access to the branch the workflow ran from, so if
 that branch is protected, allow `github-actions[bot]` to push to it.
 If a folder with the same name in different case already exists, it is replaced.
+
+### When a run fails
+
+If the conversion job fails or is cancelled, a **Delete HF repo after failure** job removes the output repo, but
+only if the planner saw that it didn't exist before this run. A repo from earlier runs is never deleted, so its
+existing uploads stay. Its card is still refreshed to list what is there. The **Save model card** job is skipped
+for deleted repos, so nothing lands in `models/`. Models that llama.cpp can't convert (for example custom-code
+architectures like `GraniteVisionEmb`) fail this way and leave nothing behind.
 
 ### Runner sizing
 

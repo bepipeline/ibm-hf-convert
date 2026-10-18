@@ -26,7 +26,8 @@ from huggingface_hub import HfApi, snapshot_download
 
 from common import (
     CONVERTER_TYPES, GIB, QUANT_SIZE_RATIO, SPLIT_MAX_SIZE, SPLIT_THRESHOLD, Endian, Publisher, Results, Uploader,
-    annotate, check_free_disk, converter_tags_override, has_projector, fmt_bytes, group, parse_quants, run, select_safetensors_files,
+    annotate, check_free_disk, converter_tags_override, has_projector, fmt_bytes, group, parse_quants, resolve_native,
+    run, select_safetensors_files,
 )
 from card import base_name
 
@@ -63,7 +64,6 @@ def main() -> None:
     args = p.parse_args()
 
     name = base_name(args.model)
-    quants = parse_quants(args.quants)
 
     work: Path = args.work.resolve()
     src, out_root, bf16_dir = work / "src", work / "out", work / "bf16"
@@ -79,6 +79,7 @@ def main() -> None:
         check_free_disk(work, args.need_bytes)
 
     info = HfApi().model_info(args.model, files_metadata=True)
+    quants = resolve_native(parse_quants(args.quants), info.safetensors)
     files = select_safetensors_files(info.siblings)
     bf16_bytes = 2 * info.safetensors.total if info.safetensors else sum(s for f, s in files if f.endswith(".safetensors"))
     # A BF16-only source survives the BF16 intermediate losslessly, so llama-quantize can make F32/F16 from it,

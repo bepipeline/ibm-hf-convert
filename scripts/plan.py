@@ -17,7 +17,7 @@ from huggingface_hub import HfApi, hf_hub_download
 from common import (
     CONVERTER_TYPES, OS_RESERVE, PUBLISH_OVERHEAD, QUANT_CPU_COST, QUANT_SIZE_RATIO, RUNNERS, SPLIT_THRESHOLD,
     annotate, fmt_bytes, gh_output, gh_summary, has_projector, is_later_shard, is_moe, model_name, output_repo,
-    parse_model_tag, parse_quants, runner_label, select_gguf_files, select_safetensors_files,
+    native_float_type, parse_model_tag, parse_quants, resolve_native, runner_label, select_gguf_files, select_safetensors_files,
 )
 from card import base_name
 
@@ -112,6 +112,7 @@ def main() -> None:
 
     namespace = resolve_namespace(api, args.namespace.strip())
     out_repo = existing_repo_case(api, output_repo(namespace, repo_id))
+    repo_existed = api.repo_exists(out_repo)  # a failed run only deletes repos it created itself
     rows = [("Source", f"[{repo_id}](https://huggingface.co/{repo_id})"), ("Output repo", f"[{out_repo}](https://huggingface.co/{out_repo})")]
 
     if has_st and not quant_tag:
@@ -122,7 +123,8 @@ def main() -> None:
         bf16_bytes = 2 * params if params else st_bytes
         dtypes = sorted(info.safetensors.parameters) if info.safetensors else []
         bf16_source = dtypes == ["BF16"]  # must match pipeline_safetensors.py
-        quants = parse_quants(args.quants)
+        requested = parse_quants(args.quants)
+        quants = resolve_native(requested, info.safetensors)
         try:
             config = json.load(open(hf_hub_download(repo_id, "config.json")))
         except Exception:
@@ -143,6 +145,7 @@ def main() -> None:
             ("Parameters", f"{params / 1e9:.2f} B" if params else "unknown (estimated from file size)"),
             ("Source dtypes", ", ".join(dtypes) or "unknown"),
             ("Quants", ", ".join(quants)),
+            ("Source float type", native_float_type(info.safetensors) + (" (NATIVE)" if "NATIVE" in requested else "")),
             ("Projector", "unknown (config.json not readable)" if config is None
              else "mmproj F16 (vision/audio model)" if has_projector(config) else "none (text-only model)"),
             ("F32/F16 from", "BF16 intermediate (llama-quantize)" if bf16_source else "safetensors (convert_hf_to_gguf.py)"),
@@ -167,7 +170,8 @@ def main() -> None:
         raise SystemExit(f"{repo_id} has no *.safetensors or *.gguf files")
 
     label = runner_label(size)
-    rows += [("Estimated disk need", fmt_bytes(need)), ("Runner", f"`{label}`")]
+    rows += [("Estimated disk need", fmt_bytes(need)), ("Runner", f"`{label}`"),
+             ("Output repo exists", "yes (kept if the run fails)" if repo_existed else "no (deleted if the run fails)")]
     gh_summary("### Plan\n\n| | |\n|---|---|\n" + "\n".join(f"| {k} | {v} |" for k, v in rows))
     gh_output(
         pipeline=pipeline,
@@ -179,6 +183,7 @@ def main() -> None:
         quants=",".join(quants),
         runner=label,
         need_bytes=need,
+        repo_existed=str(repo_existed).lower(),
     )
 
 

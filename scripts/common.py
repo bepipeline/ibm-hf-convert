@@ -126,17 +126,40 @@ def output_repo(namespace: str, repo_id: str) -> str:
 QUANT_ALIASES = {"Q3_K": "Q3_K_M", "Q4_K": "Q4_K_M", "Q5_K": "Q5_K_M"}
 
 
+# Stands for the source model's own float type, e.g. BF16 for a BF16-trained model. Converting a BF16 model to
+# F32 only doubles the size, and to F16 loses exponent range; on a z17, BF16 also ran faster than F16.
+NATIVE = "NATIVE"
+FLOAT_TYPES = ("F32", "F16", "BF16")
+
+
+def native_float_type(safetensors) -> str:
+    """The float type holding most of the source's parameters; BF16 when that isn't a GGUF float type (FP8, int)."""
+    params = dict(safetensors.parameters) if safetensors else {}
+    dominant = max(params, key=params.get) if params else "BF16"
+    return dominant if dominant in FLOAT_TYPES else "BF16"
+
+
+def resolve_native(quants: list[str], safetensors) -> list[str]:
+    """Replace NATIVE with the source's float type, keeping its place in the list and dropping duplicates."""
+    out: list[str] = []
+    for q in quants:
+        q = native_float_type(safetensors) if q == NATIVE else q
+        if q not in out:
+            out.append(q)
+    return out
+
+
 def parse_quants(raw: str) -> list[str]:
     quants: list[str] = []
     for q in re.split(r"[\s,]+", raw.strip().upper()):
         q = QUANT_ALIASES.get(q, q)
         if q and q not in quants:
             quants.append(q)
-    bad = [q for q in quants if q not in QUANT_SIZE_RATIO]
+    bad = [q for q in quants if q not in QUANT_SIZE_RATIO and q != NATIVE]
     if bad:
         raise ValueError(
             f"Unsupported quant type(s): {', '.join(bad)}. "
-            f"Supported (no imatrix needed, endian-convertible): {', '.join(QUANT_SIZE_RATIO)}"
+            f"Supported (no imatrix needed, endian-convertible): {NATIVE}, {', '.join(QUANT_SIZE_RATIO)}"
         )
     if not quants:
         raise ValueError("No quant types given")

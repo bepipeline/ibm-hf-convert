@@ -11,7 +11,7 @@ on:
       quants:
         description: "Output types for safetensors models (ignored for GGUF repos)"
         type: string
-        default: F32,F16,BF16,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K_S,Q3_K_M,Q3_K_L,Q4_K_S,Q4_K_M,Q5_K_S,Q5_K_M,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE
+        default: NATIVE,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K_S,Q3_K_M,Q3_K_L,Q4_K_S,Q4_K_M,Q5_K_S,Q5_K_M,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE
       hf_namespace:
         description: "HF user/org to upload to (default: HF_NAMESPACE variable, else the HF_TOKEN owner)"
         type: string
@@ -55,6 +55,7 @@ jobs:
       quants: ${{ steps.plan.outputs.quants }}
       runner: ${{ steps.plan.outputs.runner }}
       need_bytes: ${{ steps.plan.outputs.need_bytes }}
+      repo_existed: ${{ steps.plan.outputs.repo_existed }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -113,11 +114,47 @@ jobs:
     secrets:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
+  cleanup:
+    name: Delete HF repo after failure
+    needs: [plan, safetensors, gguf]
+    # Only repos this run created; an existing repo keeps the files from earlier successful runs.
+    if: >-
+      always() && needs.plan.result == 'success' && needs.plan.outputs.repo_existed == 'false' &&
+      (contains(fromJSON('["failure", "cancelled"]'), needs.safetensors.result) ||
+       contains(fromJSON('["failure", "cancelled"]'), needs.gguf.result))
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    steps:
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+          activate-environment: "true"
+          enable-cache: "false"
+
+      - run: uv pip install huggingface_hub
+
+      - name: Delete ${{ needs.plan.outputs.out_repo }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OUT_REPO: ${{ needs.plan.outputs.out_repo }}
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          repo = os.environ["OUT_REPO"]
+          HfApi().delete_repo(repo, repo_type="model", missing_ok=True)
+          print(f"Deleted {repo}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write(f"Deleted `{repo}` from Hugging Face because the run failed and the repo was created by it.\n")
+          PY
+
   readme:
     name: Save model card
     needs: [plan, safetensors, gguf]
-    # Also after partial failures: the pipelines still publish the card for whatever was uploaded.
-    if: always() && needs.plan.result == 'success'
+    # After a failure, only when the HF repo existed before (a repo this run created gets deleted by cleanup).
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      (needs.plan.outputs.repo_existed == 'true' || needs.safetensors.result == 'success' || needs.gguf.result == 'success')
     runs-on: ubuntu-slim
     timeout-minutes: 10
     permissions:
