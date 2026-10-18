@@ -55,6 +55,10 @@ still be requested explicitly.
    1. Download the model. If the repo ships Mistral's native format (`params.json`, `consolidated*.safetensors`,
       `tekken.json`), download that instead of the HF-format weights and convert with `--mistral-format`.
       Newer Mistral models need this, because their HF tokenizer only loads in transformers 5.
+      Other repos whose `tokenizer_config.json` was written by transformers 5 (`TokenizersBackend`, list-form
+      `extra_special_tokens`) are rewritten to the 4.x equivalents that llama.cpp's converter can load.
+      For Muse-Glimmer and Ministral-3, the rewritten config gives a tokenizer identical to what
+      transformers 5 builds from the original.
    2. If F32/F16 were requested and any source tensor is not BF16, make them directly from the safetensors.
    3. Make a little-endian BF16 intermediate. For vision or audio models (`vision_config`/`audio_config` in
       `config.json`), also export an F16 projector, `mmproj-<Model>-BE-F16.gguf`. Then delete the safetensors.

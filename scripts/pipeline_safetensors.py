@@ -27,7 +27,7 @@ from huggingface_hub import HfApi, snapshot_download
 
 from common import (
     CONVERTER_TYPES, GIB, QUANT_SIZE_RATIO, SPLIT_MAX_SIZE, SPLIT_THRESHOLD, Endian, Publisher, Results, Uploader,
-    annotate, check_free_disk, converter_tags_override, has_projector, fmt_bytes, group, parse_quants, resolve_native,
+    adapt_tokenizer_config, annotate, check_free_disk, converter_tags_override, has_projector, fmt_bytes, group, parse_quants, resolve_native,
     is_mistral_format, run, select_safetensors_files,
 )
 from card import base_name
@@ -127,6 +127,8 @@ def main() -> None:
 
     with group(f"Download {args.model}"):
         snapshot_download(args.model, local_dir=src, allow_patterns=[f for f, _ in files])
+        for change in adapt_tokenizer_config(src):
+            annotate("notice", f"tokenizer_config.json written by transformers 5, adapted for the converter: {change}")
 
     uploader.ensure_repo()
     # general.tags in every GGUF: the model's own tags plus the uploading account (llama-quantize copies it on)

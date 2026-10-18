@@ -374,6 +374,35 @@ class Endian:
 
 
 # ---------------------------------------------------------------------------
+# Source fix-ups
+# ---------------------------------------------------------------------------
+
+def adapt_tokenizer_config(src: Path) -> list[str]:
+    """Let llama.cpp's pinned transformers 4.x read a tokenizer_config.json written by transformers 5.
+
+    v5 calls the tokenizer.json-backed tokenizer `TokenizersBackend` (v4: PreTrainedTokenizerFast) and
+    stores extra special tokens as a list (v4: additional_special_tokens). Rewrites both in place and
+    returns a description of each change.
+    """
+    path = src / "tokenizer_config.json"
+    if not path.exists() or not (src / "tokenizer.json").exists():
+        return []
+    cfg = json.loads(path.read_text())
+    changes = []
+    if cfg.get("tokenizer_class") == "TokenizersBackend":
+        cfg["tokenizer_class"] = "PreTrainedTokenizerFast"
+        changes.append("tokenizer_class TokenizersBackend -> PreTrainedTokenizerFast")
+    if isinstance(cfg.get("extra_special_tokens"), list):
+        extra = cfg.pop("extra_special_tokens")
+        known = list(cfg.get("additional_special_tokens") or [])
+        cfg["additional_special_tokens"] = known + [t for t in extra if t not in known]
+        changes.append(f"extra_special_tokens list ({len(extra)}) -> additional_special_tokens")
+    if changes:
+        path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+    return changes
+
+
+# ---------------------------------------------------------------------------
 # GGUF metadata tags
 # ---------------------------------------------------------------------------
 
