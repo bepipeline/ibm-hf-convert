@@ -1,7 +1,17 @@
 # ibm-hf-convert
 
 GitHub Actions pipeline that turns a Hugging Face model into **big-endian** GGUF files (for s390x / IBM Z)
-and uploads them to `<namespace>/<model>-BE-GGUF` on Hugging Face. It runs on Blacksmith ARM runners.
+and uploads them to `<namespace>/<Model>-BE-GGUF` on Hugging Face. It runs on Blacksmith ARM runners.
+
+The model name is title-cased everywhere it appears: the HF repo, the GGUF file names and the `models/` folder.
+So `ibm-granite/granite-4.2-3b` becomes `Granite-4.2-3B-BE-GGUF`, `Granite-4.2-3B-BE-Q4_K_M.gguf` and
+`models/Granite-4.2-3B/`.
+- Size labels are upper-cased: `3b` → `3B`, `8x7b` → `8x7B`.
+- `it` and `vl` become `IT` and `VL`.
+- Parts that already have capitals, and version parts like `v0.3`, are left alone.
+
+If a repo with the same name in different case already exists, it is reused, and the run notes that you can
+rename it on HF.
 
 ## Usage
 
@@ -72,6 +82,7 @@ A final **Save model card** job on `ubuntu-slim` also commits the same card to t
 the GitHub copy renders the same way. It runs even if some quants failed, since the card
 still lists everything that was uploaded. It needs push access to the branch the workflow ran from, so if
 that branch is protected, allow `github-actions[bot]` to push to it.
+If a folder with the same name in different case already exists, it is replaced.
 
 ### Runner sizing
 

@@ -139,6 +139,15 @@ jobs:
           MODEL_DIR: models/${{ needs.plan.outputs.base_name }}
           SOURCE: ${{ needs.plan.outputs.repo_id }}
         run: |
+          # Drop a folder that differs only in case (e.g. from before names were title-cased);
+          # two such folders break checkouts on case-insensitive file systems like macOS.
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          for d in models/*/; do
+            d="${d%/}"
+            if [ -d "$d" ] && [ "$d" != "$MODEL_DIR" ] && [ "$(lower "$d")" = "$(lower "$MODEL_DIR")" ]; then
+              git rm -r -q "$d"
+            fi
+          done
           # Mirror the card folder so images referenced by relative path render on GitHub too.
           rm -rf "$MODEL_DIR"
           mkdir -p "$MODEL_DIR"

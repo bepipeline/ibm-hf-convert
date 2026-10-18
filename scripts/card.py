@@ -47,8 +47,29 @@ USE_CASES = [
 
 
 def base_name(repo_id: str) -> str:
-    """'unsloth/Qwen3-8B-GGUF' -> 'Qwen3-8B'"""
-    return re.sub(r"-GGUF$", "", repo_id.split("/", 1)[1], flags=re.IGNORECASE)
+    """Model name used for the repo, the files and the models/ folder, title-cased:
+    'unsloth/Qwen3-8B-GGUF' -> 'Qwen3-8B', 'ibm-granite/granite-4.2-3b' -> 'Granite-4.2-3B'."""
+    return title_case(re.sub(r"-GGUF$", "", repo_id.split("/", 1)[1], flags=re.IGNORECASE))
+
+
+ACRONYMS = {"it": "IT", "vl": "VL", "moe": "MoE"}
+
+
+def title_case(name: str) -> str:
+    """'granite-4.2-3b' -> 'Granite-4.2-3B': capitalize each '-' part and upper-case size labels.
+
+    Parts that already contain a capital ('DeepSeek', 'A3B') and version parts ('v0.3') are kept as they are.
+    """
+    def part(p: str) -> str:
+        if any(c.isupper() for c in p) or re.fullmatch(r"v\d[\w.]*", p):
+            return p
+        if p in ACRONYMS:
+            return ACRONYMS[p]
+        if re.fullmatch(r"(\d+x)?\d+(\.\d+)?[kmbt]|[a-z]\d+(\.\d+)?[kmbt]", p):  # 3b, 0.6b, 8x7b, a3b
+            return p.upper().replace("X", "x")
+        return p[:1].upper() + p[1:]
+
+    return "-".join(part(p) for p in name.split("-"))
 
 
 def be_filename(base: str, rel: str, variant: str | None = None) -> str:

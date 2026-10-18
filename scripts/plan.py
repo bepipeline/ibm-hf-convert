@@ -80,6 +80,19 @@ def resolve_namespace(api: HfApi, explicit: str) -> str:
         raise SystemExit(f"Could not determine HF namespace (set hf_namespace or a valid HF_TOKEN): {e}") from None
 
 
+def existing_repo_case(api: HfApi, repo_id: str) -> str:
+    """HF repo ids are case-sensitive, so reuse a repo that differs only in case instead of creating a twin."""
+    namespace, name = repo_id.split("/", 1)
+    try:
+        for m in api.list_models(author=namespace, search=name, limit=50):
+            if m.id.lower() == repo_id.lower() and m.id != repo_id:
+                annotate("notice", f"Using existing repo {m.id}. Rename it to {repo_id} on Hugging Face to switch to the title-case name.")
+                return m.id
+    except Exception as e:
+        annotate("warning", f"Could not check for an existing repo named like {repo_id}: {e}")
+    return repo_id
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model", default=os.environ.get("INPUT_MODEL", ""))
@@ -98,7 +111,7 @@ def main() -> None:
     has_gguf = any(s.rfilename.endswith(".gguf") for s in siblings)
 
     namespace = resolve_namespace(api, args.namespace.strip())
-    out_repo = output_repo(namespace, repo_id)
+    out_repo = existing_repo_case(api, output_repo(namespace, repo_id))
     rows = [("Source", f"[{repo_id}](https://huggingface.co/{repo_id})"), ("Output repo", f"[{out_repo}](https://huggingface.co/{out_repo})")]
 
     if has_st and not quant_tag:
