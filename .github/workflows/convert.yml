@@ -11,7 +11,7 @@ on:
       quants:
         description: "Output types for safetensors models (ignored for GGUF repos)"
         type: string
-        default: F32,F16,BF16,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K,Q4_K,Q5_K,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE
+        default: F32,F16,BF16,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K_S,Q3_K_M,Q3_K_L,Q4_K_S,Q4_K_M,Q5_K_S,Q5_K_M,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE
       hf_namespace:
         description: "HF user/org to upload to (default: HF_NAMESPACE variable, else the HF_TOKEN owner)"
         type: string

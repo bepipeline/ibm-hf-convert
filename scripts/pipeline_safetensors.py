@@ -15,6 +15,7 @@ produced, as long as the disk has room for both.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -24,8 +25,8 @@ from gguf import GGMLQuantizationType, GGUFReader
 from huggingface_hub import HfApi, snapshot_download
 
 from common import (
-    CONVERTER_TYPES, QUANT_SIZE_RATIO, SPLIT_MAX_SIZE, SPLIT_THRESHOLD, Endian, Publisher, Results, Uploader,
-    annotate, check_free_disk, fmt_bytes, group, parse_quants, run, select_safetensors_files,
+    CONVERTER_TYPES, GIB, QUANT_SIZE_RATIO, SPLIT_MAX_SIZE, SPLIT_THRESHOLD, Endian, Publisher, Results, Uploader,
+    annotate, check_free_disk, converter_tags_override, has_projector, fmt_bytes, group, parse_quants, run, select_safetensors_files,
 )
 from card import base_name
 
@@ -51,7 +52,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--model", required=True, help="source repo id, e.g. Qwen/Qwen3-8B")
     p.add_argument("--out-repo", required=True)
-    p.add_argument("--quants", required=True, help="comma-separated, e.g. BF16,Q8_0,Q4_K")
+    p.add_argument("--quants", required=True, help="comma-separated, e.g. BF16,Q8_0,Q4_K_M")
     p.add_argument("--llama-cpp", type=Path, required=True, help="llama.cpp checkout")
     p.add_argument("--bin", type=Path, required=True, help="dir with llama-quantize and llama-gguf-split")
     p.add_argument("--work", type=Path, required=True)
@@ -108,6 +109,8 @@ def main() -> None:
         snapshot_download(args.model, local_dir=src, allow_patterns=[f for f, _ in files])
 
     uploader.ensure_repo()
+    # general.tags in every GGUF: the model's own tags plus the uploading account (llama-quantize copies it on)
+    meta = converter_tags_override(src, [args.out_repo.split("/", 1)[0]], work / "metadata.json")
 
     # 2. F32 / F16 straight from safetensors (not BF16 sources)
     for qtype in direct:
@@ -117,7 +120,7 @@ def main() -> None:
             with group(f"{qtype}: convert"):
                 out_dir.mkdir(parents=True, exist_ok=True)
                 run([sys.executable, convert, src, "--outtype", qtype.lower(),
-                     "--outfile", out_dir / f"{name}-BE-{qtype}.gguf", "--split-max-size", SPLIT_MAX_SIZE])
+                     "--outfile", out_dir / f"{name}-BE-{qtype}.gguf", "--split-max-size", SPLIT_MAX_SIZE, "--metadata", meta])
         except Exception as e:
             results.fail(qtype, e)
             shutil.rmtree(out_dir, ignore_errors=True)
@@ -132,12 +135,27 @@ def main() -> None:
             with group("BF16 intermediate: convert"):
                 bf16_dir.mkdir(parents=True, exist_ok=True)
                 run([sys.executable, convert, src, "--outtype", "bf16",
-                     "--outfile", bf16_dir / f"{name}-BE-BF16.gguf", "--split-max-size", SPLIT_MAX_SIZE])
+                     "--outfile", bf16_dir / f"{name}-BE-BF16.gguf", "--split-max-size", SPLIT_MAX_SIZE, "--metadata", meta])
                 intermediate = shards(bf16_dir)[0]  # llama-quantize finds the other shards itself
                 bf16_bytes = sum(f.stat().st_size for f in shards(bf16_dir))
         except Exception as e:
             for qtype in quantized + (["BF16"] if "BF16" in quants else []):
                 results.fail(qtype, RuntimeError(f"BF16 intermediate failed: {e}"))
+
+    # Vision/audio projector (small): one F16 mmproj, named so HF's `-hf` manifest pairs it with the model
+    if has_projector(json.loads((src / "config.json").read_text())):
+        out_dir = out_root / "mmproj"
+        publisher.wait_for_room(2 * GIB)
+        try:
+            with group("mmproj-F16: convert"):
+                out_dir.mkdir(parents=True, exist_ok=True)
+                run([sys.executable, convert, src, "--mmproj", "--outtype", "f16",
+                     "--outfile", out_dir / f"mmproj-{name}-BE-F16.gguf", "--metadata", meta])
+        except Exception as e:
+            results.skip("mmproj-F16", f"convert_hf_to_gguf.py --mmproj failed, architecture may be unsupported ({e})")
+            shutil.rmtree(out_dir, ignore_errors=True)
+        else:
+            publisher.submit(publish, shards(out_dir), "mmproj-F16", out_dir)
     shutil.rmtree(src, ignore_errors=True)
 
     # 4. llama-quantize types (including F32 / F16 for BF16 sources)

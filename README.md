@@ -10,7 +10,7 @@ Go to **Actions → Convert to big-endian GGUF → Run workflow**, then enter a 
 | Input | Default | Notes |
 |---|---|---|
 | `model` | — | `Qwen/Qwen3-8B` (safetensors) or `unsloth/Qwen3-8B-GGUF` (GGUF). Add `:Q4_K_M` to a GGUF repo to convert only that quant. |
-| `quants` | `F32,F16,BF16,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K,Q4_K,Q5_K,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE` | Safetensors models only. |
+| `quants` | `F32,F16,BF16,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K_S,Q3_K_M,Q3_K_L,Q4_K_S,Q4_K_M,Q5_K_S,Q5_K_M,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE` | Safetensors models only. |
 | `hf_namespace` | `HF_NAMESPACE` variable, else the token owner | User or org to upload to. |
 | `runner` | `auto` | Sets the runner size. `auto` picks one as described in [Runner sizing](#runner-sizing). |
 | `target_minutes` | `15` | Used by `auto`: the time budget for quantizing. Raise it to use smaller, cheaper runners. |
@@ -26,7 +26,8 @@ Go to **Actions → Convert to big-endian GGUF → Run workflow**, then enter a 
 2. **Safetensors pipeline:**
    1. Download the model.
    2. If any source tensor is not BF16, make F32/F16 directly from the safetensors.
-   3. Make a little-endian BF16 intermediate, then delete the safetensors.
+   3. Make a little-endian BF16 intermediate. For vision or audio models (`vision_config`/`audio_config` in
+      `config.json`), also export an F16 projector, `mmproj-<Model>-BE-F16.gguf`. Then delete the safetensors.
    4. Run `llama-quantize` once per remaining type. If every source tensor is BF16, this includes F32 and F16:
       the BF16 intermediate holds the source weights exactly, and `llama-quantize` is much faster than another
       `convert_hf_to_gguf.py` pass, which is mostly single-threaded and takes about 39 s per billion parameters.
@@ -43,14 +44,24 @@ Go to **Actions → Convert to big-endian GGUF → Run workflow**, then enter a 
 
 Byte-swapping uses llama.cpp's `gguf-py/gguf/scripts/gguf_convert_endian.py`. Every output is checked to be
 big-endian before upload. Files are named `<Model>-BE-<QUANT>.gguf` (for example `Bonsai-8B-BE-Q1_0.gguf`).
+`Q3_K`, `Q4_K` and `Q5_K` are llama.cpp aliases for the `_M` types, so their files are named `Q3_K_M`, `Q4_K_M`
+and `Q5_K_M`. HF's `-hf repo:TAG` lookup only accepts the full names.
+
+Every GGUF also gets the uploading HF account (for example `taronaeo`) added to its `general.tags` metadata:
+- **Safetensors pipeline:** passed to `convert_hf_to_gguf.py --metadata`, next to the tags the converter takes
+  from the model card. `llama-quantize` then carries it into every quant.
+- **GGUF pipeline:** the source file's metadata is rewritten before byte-swapping, which briefly needs twice the
+  file's size on disk. Shards after the first have no `general.*` metadata and aren't rewritten.
 Split outputs go under `<QUANT>/`.
 
 At the end of every run, the repo's `README.md` is regenerated in one commit:
 - **Front matter:** the original card's front matter, with `base_model` pointing at the source and these
   tags added: `gguf`, `mainframe`, `s390x`, `z15`, `z16`, `z17`, `big-endian`.
-- **Header:** creator, original model, a description and a **Provided Files** table listing every GGUF in the
-  repo, including files from earlier runs.
-- **Original card:** the source model's card under `# Original model card: …`.
+- **Header:** a link to llama.cpp's [IBM Z & LinuxONE guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/build-s390x.md),
+  the model creator and original model, and a `llama-server -hf <repo>:Q4_K_M` example. The example uses the
+  quant closest to 4 bits when there is no Q4_K_M.
+- **Provided Files:** a table listing every GGUF in the repo, including files from earlier runs.
+- **Original card:** the source model's card, unchanged, after a `---` divider.
 
 The original's LICENSE/NOTICE files, images (plus any file the card links to by relative path) and
 `.eval_results/` are copied too, so card images still render.
@@ -87,9 +98,9 @@ and works one tensor at a time.
 
 The safetensors pipeline uses at least `4vcpu`, and GGUF repos usually fit on `2vcpu`. With the default quant
 list and `target_minutes: 15`, auto picks:
-- Qwen3-0.6B: `4vcpu` (~3 min)
-- granite-4.2-3b: `8vcpu` (~8 min)
-- Qwen3-8B: `16vcpu` (~9 min)
+- Qwen3-0.6B: `4vcpu` (~4 min)
+- granite-4.2-3b: `8vcpu` (~11 min)
+- Qwen3-8B: `16vcpu` (~12 min)
 - 30B+ models: `32vcpu`
 
 F32 is the biggest output and raises the peak disk need the most. With a BF16 source over about 12 B parameters,
@@ -108,8 +119,8 @@ the F32 file is split after quantizing, so it briefly needs twice its own size.
 python -m venv .venv && . .venv/bin/activate
 pip install 'huggingface_hub[hf_xet]' -r /path/to/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
 cd scripts
-python plan.py --model Qwen/Qwen3-0.6B --quants Q8_0,Q4_K --namespace me
+python plan.py --model Qwen/Qwen3-0.6B --quants Q8_0,Q4_K_M --namespace me
 python pipeline_safetensors.py --model Qwen/Qwen3-0.6B --out-repo me/Qwen3-0.6B-BE-GGUF \
-  --quants BF16,Q8_0,Q4_K --llama-cpp /path/to/llama.cpp --bin /path/to/llama.cpp/build/bin \
+  --quants BF16,Q8_0,Q4_K_M --llama-cpp /path/to/llama.cpp --bin /path/to/llama.cpp/build/bin \
   --work /tmp/work --no-upload
 ```

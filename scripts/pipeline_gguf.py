@@ -11,7 +11,8 @@ from pathlib import Path
 from huggingface_hub import HfApi, hf_hub_download
 
 from common import (
-    Endian, Publisher, Results, UnsupportedTensorType, Uploader, check_free_disk, fmt_bytes, group,
+    Endian, Publisher, Results, UnsupportedTensorType, Uploader, add_gguf_tags, check_free_disk, fmt_bytes, group,
+    is_later_shard,
     select_gguf_files,
 )
 from card import base_name, be_filename
@@ -31,6 +32,7 @@ def main() -> None:
 
     work: Path = args.work.resolve()
     base = base_name(args.model)
+    tags = [args.out_repo.split("/", 1)[0]]  # appended to general.tags in every file
     endian = Endian(args.llama_cpp)
     uploader = Uploader(args.out_repo, args.model, enabled=not args.no_upload, private=args.private)
     publisher = Publisher(work)
@@ -49,6 +51,8 @@ def main() -> None:
     def publish(path: Path, rel: str, size: int) -> None:
         """Byte-swap, upload and delete one file. Runs on the publisher thread."""
         try:
+            if add_gguf_tags(path, tags):
+                print(f"[publish] {rel}: added {tags} to general.tags", flush=True)
             endian.to_big(path)
             target = be_filename(base, rel)
             uploader.upload(path, target)
@@ -62,7 +66,7 @@ def main() -> None:
     # The next file downloads while the previous one is byte-swapped and uploaded.
     for rel, size in files:
         path = work / rel
-        publisher.wait_for_room(size)
+        publisher.wait_for_room(size if is_later_shard(rel) else 2 * size)  # the download plus its retagged copy
         try:
             with group(f"{rel} ({fmt_bytes(size)})"):
                 hf_hub_download(args.model, rel, local_dir=work)

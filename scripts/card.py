@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import fnmatch
-import os
+import html
 import re
 import shutil
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
 import yaml
+
+S390X_GUIDE = "https://github.com/ggml-org/llama.cpp/blob/master/docs/build-s390x.md"
 
 EXTRA_TAGS = ["gguf", "mainframe", "s390x", "z15", "z16", "z17", "big-endian"]
 
@@ -24,6 +26,7 @@ COPY_PATTERNS = (
 COPY_MAX_BYTES = 50 * 1000**2
 
 SHARD_RE = re.compile(r"-(\d{5})-of-(\d{5})$")
+MMPROJ_RE = re.compile(r"(?:^|[-_.])mmproj(?=$|[-_.])", re.IGNORECASE)
 QUANT_TOKEN = re.compile(r"(?<![A-Z0-9])(I?Q\d+_[A-Z0-9_]*[A-Z0-9]|TQ\d_0|BF16|F16|F32|MXFP4(?:_MOE)?)(?![A-Z0-9])")
 
 USE_CASES = [
@@ -32,10 +35,10 @@ USE_CASES = [
     (r"^Q8_0$", "very large, extremely low quality loss"),
     (r"^Q6_K", "very large, extremely low quality loss"),
     (r"^Q5_K", "large, very low quality loss - recommended"),
-    (r"^Q5_[01]$", "legacy format, prefer Q5_K"),
+    (r"^Q5_[01]$", "legacy format, prefer Q5_K_M"),
     (r"^Q4_K", "medium, balanced quality - recommended"),
     (r"^IQ4_", "small, good quality for its size"),
-    (r"^Q4_[01]$", "legacy format, prefer Q4_K"),
+    (r"^Q4_[01]$", "legacy format, prefer Q4_K_M"),
     (r"^MXFP4", "MoE experts in MXFP4, other tensors Q8_0"),
     (r"^Q3_K", "very small, high quality loss"),
     (r"^Q2_K", "smallest K-quant, significant quality loss"),
@@ -52,12 +55,17 @@ def be_filename(base: str, rel: str, variant: str | None = None) -> str:
     """Big-endian file name in the '<base>-BE-<variant>.gguf' scheme, keeping folder and shard suffix.
 
     Without an explicit variant it is taken from the source name: 'Qwen3-8B-Q4_K_M.gguf' -> 'Q4_K_M'.
+    Projectors keep an 'mmproj-' prefix, which is what HF's `-hf` manifest looks for:
+    'mmproj-F16.gguf' -> 'mmproj-Qwen3-8B-BE-F16.gguf'.
     """
     p = PurePosixPath(rel)
     stem = p.name[: -len(".gguf")]
     shard = ""
     if m := SHARD_RE.search(stem):
         shard, stem = m.group(0), stem[: m.start()]
+    mmproj = bool(MMPROJ_RE.search(stem))
+    if mmproj:
+        stem = MMPROJ_RE.sub("", stem, count=1).strip("-._") or "F16"
     if variant is None:
         if stem.lower() == base.lower():
             variant = ""
@@ -66,7 +74,7 @@ def be_filename(base: str, rel: str, variant: str | None = None) -> str:
         else:
             variant = stem
     name = f"{base}-BE-{variant}{shard}.gguf" if variant else f"{base}-BE{shard}.gguf"
-    return str(p.with_name(name))
+    return str(p.with_name(("mmproj-" if mmproj else "") + name))
 
 
 def quant_info(filename: str) -> tuple[str, str, str]:
@@ -77,7 +85,8 @@ def quant_info(filename: str) -> tuple[str, str, str]:
     m = QUANT_TOKEN.search(method.upper())  # 'UD-Q4_K_XL' -> 'Q4_K_XL', 'qat-Q4_0' -> 'Q4_0'
     token = m.group(1) if m else ""
     bits = re.search(r"\d+", token).group(0) if token else ""
-    if "MMPROJ" in method.upper():
+    if MMPROJ_RE.search(stem):
+        method = method if MMPROJ_RE.search(method) else f"mmproj-{method}"
         use = "multimodal projector"
     else:
         use = next((u for pat, u in USE_CASES if re.search(pat, token)), "") if token else ""
@@ -90,21 +99,6 @@ def human_size(n: int) -> str:
             return f"{n:.0f}{unit}" if unit in ("B", "K") else f"{n:.1f}{unit}"
         n /= 1024
     return ""
-
-
-def display_name(text: str, fallback: str) -> str:
-    """First top-level markdown heading of the original card, else the repo name."""
-    in_code = False
-    for line in text.splitlines():
-        if line.lstrip().startswith("```"):
-            in_code = not in_code
-        elif not in_code and (m := re.match(r"^#\s+(.+?)\s*#*\s*$", line)):
-            name = re.sub(r"<[^>]+>", "", m.group(1))
-            name = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", name).strip(" *_`")
-            if 0 < len(name) <= 80:
-                return name
-            break
-    return fallback
 
 
 def files_table(out_repo: str, files: list[tuple[str, int]]) -> str:
@@ -128,12 +122,6 @@ def files_table(out_repo: str, files: list[tuple[str, int]]) -> str:
     return "\n".join([header] + [r[2] for r in rows])
 
 
-def generator_url() -> str:
-    if os.environ.get("GITHUB_REPOSITORY"):
-        return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ['GITHUB_REPOSITORY']}"
-    return "https://github.com/bepipeline/ibm-hf-convert"
-
-
 def creator_name(api, owner: str) -> str:
     for fetch in (api.get_organization_overview, api.get_user_overview):
         try:
@@ -153,8 +141,7 @@ def build_card(api, source: str, out_repo: str, files: list[tuple[str, int]]) ->
     except Exception:
         data, text = {}, ""
 
-    owner, source_name = source.split("/", 1)
-    name = display_name(text, source_name)
+    owner = source.split("/", 1)[0]
 
     for key in list(data):
         if key in DROP_KEYS or key.startswith("extra_gated"):
@@ -168,24 +155,49 @@ def build_card(api, source: str, out_repo: str, files: list[tuple[str, int]]) ->
     data["quantized_by"] = out_repo.split("/", 1)[0]
 
     front = yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()
+    tag = example_tag(files)
     return f"""---
 {front}
 ---
 
-# {name} Big-Endian - GGUF
-- Model Creator: [{creator_name(api, owner)}](https://huggingface.co/{owner})
-- Original Model: [{source}](https://huggingface.co/{source})
+# Read our How to [Run on IBM Z & LinuxONE Guide!]({S390X_GUIDE})
 
-### Description
-This repository contains GGUF format model for [{name}](https://huggingface.co/{source}), compiled using big-endian. This repository has been automatically generated by {generator_url()}.
+<div>
+<p style="margin: 0 0 0px 0; margin-top: 0px;">
+<em>These models are byte-swapped to run on IBM Z & LinuxONE systems.</em>
+</p>
 
-### Provided Files
+<ul style="margin: 0;">
+<li>Model Creator: <a href="https://huggingface.co/{owner}">{html.escape(creator_name(api, owner))}</a></li>
+<li>Original Model: <a href="https://huggingface.co/{source}">{source}</a></li>
+</ul>
+</div>
+
+# Provided Files
+
+Get started on your IBM Z & LinuxONE system
+
+```sh
+build/bin/llama-server -hf {out_repo}{f":{tag}" if tag else ""}
+```
+
 {files_table(out_repo, files)}
 
-# Original model card: {name}
+---
 
 {text.strip()}
 """
+
+
+def example_tag(files: list[tuple[str, int]]) -> str:
+    """Quant to show in the llama-server example: Q4_K_M if present, else the closest to 4 bits."""
+    methods = {quant_info(path)[0]: quant_info(path)[1] for path, _ in files}
+    methods = {m: int(b) for m, b in methods.items() if m and b and "MMPROJ" not in m.upper()}
+    if not methods:
+        return ""
+    if "Q4_K_M" in methods:
+        return "Q4_K_M"
+    return min(methods, key=lambda m: (abs(methods[m] - 4), m))
 
 
 def referenced_files(text: str) -> set[str]:

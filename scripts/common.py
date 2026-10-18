@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 import shutil
@@ -120,9 +121,15 @@ def output_repo(namespace: str, repo_id: str) -> str:
     return f"{namespace}/{card.base_name(repo_id)}-BE-GGUF"
 
 
+# llama-quantize aliases (quantize.cpp maps them to the _M ftype). Outputs are named by the full type,
+# which is also the only form HF's `-hf repo:TAG` lookup accepts.
+QUANT_ALIASES = {"Q3_K": "Q3_K_M", "Q4_K": "Q4_K_M", "Q5_K": "Q5_K_M"}
+
+
 def parse_quants(raw: str) -> list[str]:
     quants: list[str] = []
     for q in re.split(r"[\s,]+", raw.strip().upper()):
+        q = QUANT_ALIASES.get(q, q)
         if q and q not in quants:
             quants.append(q)
     bad = [q for q in quants if q not in QUANT_SIZE_RATIO]
@@ -176,6 +183,17 @@ def select_gguf_files(siblings, quant_tag: str | None) -> list[tuple[str, int]]:
         tag_re = re.compile(r"(?<![A-Za-z0-9])" + re.escape(quant_tag) + r"(?![A-Za-z0-9_])", re.IGNORECASE)
         files = [f for f in files if tag_re.search(f[0])]
     return sorted(files)
+
+
+def has_projector(config: dict) -> bool:
+    """Vision/audio models: convert_hf_to_gguf.py --mmproj exports their encoder + projector."""
+    return any(config.get(k) for k in ("vision_config", "audio_config", "whisper_config", "vision_encoder"))
+
+
+def is_later_shard(name: str) -> bool:
+    """'x-00002-of-00003.gguf' -> True: shards after the first hold tensors only, no general.* metadata."""
+    m = re.search(r"-(\d{5})-of-\d{5}\.gguf$", name)
+    return bool(m) and int(m.group(1)) > 1
 
 
 def is_moe(config: dict) -> bool:
@@ -315,6 +333,51 @@ class Endian:
 
 
 # ---------------------------------------------------------------------------
+# GGUF metadata tags
+# ---------------------------------------------------------------------------
+
+def converter_tags_override(src: Path, extra: list[str], out: Path) -> Path:
+    """Metadata override for convert_hf_to_gguf.py --metadata: the general.tags the converter would derive
+    on its own (model card tags + pipeline_tag, via the same gguf-py code) with `extra` appended."""
+    import gguf
+
+    try:
+        tags = list(gguf.Metadata.load(None, src).tags or [])
+    except Exception as e:
+        annotate("warning", f"Could not read model card tags ({e}); general.tags will only hold {extra}")
+        tags = []
+    out.write_text(json.dumps({gguf.Keys.General.TAGS: tags + [t for t in extra if t not in tags]}))
+    return out
+
+
+def add_gguf_tags(path: Path, extra: list[str]) -> bool:
+    """Append `extra` to general.tags of a little-endian GGUF by rewriting it (one full copy, so 2x its size
+    on disk for a moment). Split shards after the first carry no general.* metadata and are left alone."""
+    import gguf
+    from gguf.scripts.gguf_new_metadata import MetadataDetails, copy_with_new_metadata
+
+    reader = gguf.GGUFReader(path, "r")
+    arch = reader.get_field(gguf.Keys.General.ARCHITECTURE)
+    if arch is None:
+        return False
+    field = reader.get_field(gguf.Keys.General.TAGS)
+    tags = list(field.contents()) if field else []
+    missing = [t for t in extra if t not in tags]
+    if not missing:
+        return False
+    tmp = path.with_name(path.name + ".tagged")
+    writer = gguf.GGUFWriter(tmp, arch=arch.contents(), endianess=reader.endianess)
+    if (alignment := reader.get_field(gguf.Keys.General.ALIGNMENT)) is not None:
+        writer.data_alignment = alignment.contents()
+    copy_with_new_metadata(reader, writer, {
+        gguf.Keys.General.TAGS: MetadataDetails(gguf.GGUFValueType.ARRAY, tags + missing, sub_type=gguf.GGUFValueType.STRING),
+    }, [])
+    del reader
+    tmp.replace(path)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Hugging Face upload
 # ---------------------------------------------------------------------------
 
@@ -389,7 +452,7 @@ class Publisher:
     Jobs must handle their own errors (record them in Results).
     """
 
-    def __init__(self, work: Path, max_pending: int = 2):
+    def __init__(self, work: Path, max_pending: int = 4):
         self.work = work
         self.max_pending = max_pending
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="publish")

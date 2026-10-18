@@ -16,7 +16,7 @@ from huggingface_hub import HfApi, hf_hub_download
 
 from common import (
     CONVERTER_TYPES, OS_RESERVE, PUBLISH_OVERHEAD, QUANT_CPU_COST, QUANT_SIZE_RATIO, RUNNERS, SPLIT_THRESHOLD,
-    annotate, fmt_bytes, gh_output, gh_summary, is_moe, model_name, output_repo,
+    annotate, fmt_bytes, gh_output, gh_summary, has_projector, is_later_shard, is_moe, model_name, output_repo,
     parse_model_tag, parse_quants, runner_label, select_gguf_files, select_safetensors_files,
 )
 from card import base_name
@@ -110,9 +110,12 @@ def main() -> None:
         dtypes = sorted(info.safetensors.parameters) if info.safetensors else []
         bf16_source = dtypes == ["BF16"]  # must match pipeline_safetensors.py
         quants = parse_quants(args.quants)
-        if "MXFP4_MOE" in quants:
+        try:
             config = json.load(open(hf_hub_download(repo_id, "config.json")))
-            if not is_moe(config):
+        except Exception:
+            config = None  # e.g. gated; the pipeline reads the downloaded config.json itself
+        if "MXFP4_MOE" in quants:
+            if config is not None and not is_moe(config):
                 quants.remove("MXFP4_MOE")
                 annotate("notice", "Dropping MXFP4_MOE: dense model (it would only duplicate Q8_0)")
         if not quants:
@@ -127,6 +130,8 @@ def main() -> None:
             ("Parameters", f"{params / 1e9:.2f} B" if params else "unknown (estimated from file size)"),
             ("Source dtypes", ", ".join(dtypes) or "unknown"),
             ("Quants", ", ".join(quants)),
+            ("Projector", "unknown (config.json not readable)" if config is None
+             else "mmproj F16 (vision/audio model)" if has_projector(config) else "none (text-only model)"),
             ("F32/F16 from", "BF16 intermediate (llama-quantize)" if bf16_source else "safetensors (convert_hf_to_gguf.py)"),
             ("Estimated quantize time", f"~{cpu_seconds / vcpu / 60:.0f} min on {vcpu} vCPU (target {args.target_minutes:g} min)"),
         ]
@@ -137,7 +142,9 @@ def main() -> None:
             raise SystemExit(f"No GGUF files in {repo_id} match tag {quant_tag!r}")
         quants = []
         largest = max(size for _, size in files)
-        need = int(largest * 1.05) + OS_RESERVE  # one file at a time, byte-swapped in place
+        # One file at a time, plus a retagged copy for files that carry metadata (not shards 2..N).
+        retagged = max((sz for f, sz in files if not is_later_shard(f)), default=0)
+        need = int(max(largest * 1.05, retagged * 2.1)) + OS_RESERVE
         size = pick_runner(need, GGUF_MIN_RUNNER, args.runner)
         rows += [
             ("Pipeline", "GGUF → big-endian"),
