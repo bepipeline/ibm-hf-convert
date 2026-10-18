@@ -73,10 +73,11 @@ runs:
         FULL: ${{ inputs.full }}
       run: |
         # Local gguf-py (newest quant types + vectorized endian script) instead of the PyPI release.
+        # mistral-common: needed for --mistral-format conversions (not in llama.cpp's requirements files).
         if [ "$FULL" = "true" ]; then
           uv pip install --index-strategy unsafe-best-match \
             -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt \
-            'huggingface_hub[hf_xet]' ./llama.cpp/gguf-py
+            'huggingface_hub[hf_xet]' mistral-common ./llama.cpp/gguf-py
         else
           uv pip install 'huggingface_hub[hf_xet]' ./llama.cpp/gguf-py
         fi

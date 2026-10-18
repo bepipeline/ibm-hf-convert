@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 from gguf import GGMLQuantizationType, GGUFReader
@@ -27,7 +28,7 @@ from huggingface_hub import HfApi, snapshot_download
 from common import (
     CONVERTER_TYPES, GIB, QUANT_SIZE_RATIO, SPLIT_MAX_SIZE, SPLIT_THRESHOLD, Endian, Publisher, Results, Uploader,
     annotate, check_free_disk, converter_tags_override, has_projector, fmt_bytes, group, parse_quants, resolve_native,
-    run, select_safetensors_files,
+    is_mistral_format, run, select_safetensors_files,
 )
 from card import base_name
 
@@ -81,6 +82,8 @@ def main() -> None:
     info = HfApi().model_info(args.model, files_metadata=True)
     quants = resolve_native(parse_quants(args.quants), info.safetensors)
     files = select_safetensors_files(info.siblings)
+    # Converter flags shared by every convert_hf_to_gguf.py call
+    src_format = ["--mistral-format"] if is_mistral_format(info.siblings) else []
     bf16_bytes = 2 * info.safetensors.total if info.safetensors else sum(s for f, s in files if f.endswith(".safetensors"))
     # A BF16-only source survives the BF16 intermediate losslessly, so llama-quantize can make F32/F16 from it,
     # which is far faster than a mostly single-threaded converter pass each.
@@ -106,6 +109,22 @@ def main() -> None:
             if not args.no_upload:
                 shutil.rmtree(out_dir, ignore_errors=True)
 
+    def publish_copy(files: list[Path], qtype: str, out_dir: Path, copied: threading.Event) -> None:
+        """Copy little-endian files that are still being read (the BF16 intermediate), then publish the copies."""
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            copies = []
+            for f in files:
+                shutil.copyfile(f, out_dir / f.name)
+                copies.append(out_dir / f.name)
+        except Exception as e:
+            results.fail(qtype, e)
+            shutil.rmtree(out_dir, ignore_errors=True)
+            return
+        finally:
+            copied.set()
+        publish(copies, qtype, out_dir)
+
     with group(f"Download {args.model}"):
         snapshot_download(args.model, local_dir=src, allow_patterns=[f for f, _ in files])
 
@@ -120,7 +139,7 @@ def main() -> None:
         try:
             with group(f"{qtype}: convert"):
                 out_dir.mkdir(parents=True, exist_ok=True)
-                run([sys.executable, convert, src, "--outtype", qtype.lower(),
+                run([sys.executable, convert, src, *src_format, "--outtype", qtype.lower(),
                      "--outfile", out_dir / f"{name}-BE-{qtype}.gguf", "--split-max-size", SPLIT_MAX_SIZE, "--metadata", meta])
         except Exception as e:
             results.fail(qtype, e)
@@ -135,7 +154,7 @@ def main() -> None:
         try:
             with group("BF16 intermediate: convert"):
                 bf16_dir.mkdir(parents=True, exist_ok=True)
-                run([sys.executable, convert, src, "--outtype", "bf16",
+                run([sys.executable, convert, src, *src_format, "--outtype", "bf16",
                      "--outfile", bf16_dir / f"{name}-BE-BF16.gguf", "--split-max-size", SPLIT_MAX_SIZE, "--metadata", meta])
                 intermediate = shards(bf16_dir)[0]  # llama-quantize finds the other shards itself
                 bf16_bytes = sum(f.stat().st_size for f in shards(bf16_dir))
@@ -144,13 +163,14 @@ def main() -> None:
                 results.fail(qtype, RuntimeError(f"BF16 intermediate failed: {e}"))
 
     # Vision/audio projector (small): one F16 mmproj, named so HF's `-hf` manifest pairs it with the model
-    if has_projector(json.loads((src / "config.json").read_text())):
+    configs = [json.loads((src / f).read_text()) for f in ("config.json", "params.json") if (src / f).exists()]
+    if any(has_projector(c) for c in configs):
         out_dir = out_root / "mmproj"
         publisher.wait_for_room(2 * GIB)
         try:
             with group("mmproj-F16: convert"):
                 out_dir.mkdir(parents=True, exist_ok=True)
-                run([sys.executable, convert, src, "--mmproj", "--outtype", "f16",
+                run([sys.executable, convert, src, *src_format, "--mmproj", "--outtype", "f16",
                      "--outfile", out_dir / f"mmproj-{name}-BE-F16.gguf", "--metadata", meta])
         except Exception as e:
             results.skip("mmproj-F16", f"convert_hf_to_gguf.py --mmproj failed, architecture may be unsupported ({e})")
@@ -158,6 +178,17 @@ def main() -> None:
         else:
             publisher.submit(publish, shards(out_dir), "mmproj-F16", out_dir)
     shutil.rmtree(src, ignore_errors=True)
+
+    # BF16 output early, from a copy, so it uploads while quantizing runs instead of after it (8 min of a
+    # 30B run's tail). Only when the disk has room for the copy next to a full queue of quants; otherwise
+    # the intermediate itself is published once quantizing is done.
+    bf16_copied: threading.Event | None = None
+    if intermediate and "BF16" in quants:
+        largest = max((QUANT_SIZE_RATIO[q] for q in quantized), default=0) * bf16_bytes
+        if shutil.disk_usage(work).free > bf16_bytes + publisher.max_pending * largest + 20 * GIB:
+            print("[publish] room to publish BF16 early from a copy", flush=True)
+            bf16_copied = threading.Event()
+            publisher.submit(publish_copy, shards(bf16_dir), "BF16", out_root / "BF16", bf16_copied)
 
     # 4. llama-quantize types (including F32 / F16 for BF16 sources)
     if intermediate:
@@ -181,10 +212,12 @@ def main() -> None:
                 continue
             publisher.submit(publish, shards(out_dir), qtype, out_dir)
 
-        # 5. BF16 last: byte-swapping destroys it as a quantize input
-        if "BF16" in quants:
+        # 5. BF16 last, unless already published from a copy: byte-swapping destroys it as a quantize input
+        if "BF16" in quants and not bf16_copied:
             publisher.submit(publish, shards(bf16_dir), "BF16", bf16_dir)
         elif not args.no_upload:
+            if bf16_copied:
+                bf16_copied.wait()  # the copy may still be reading the intermediate
             shutil.rmtree(bf16_dir, ignore_errors=True)
 
     with group("Waiting for uploads"):

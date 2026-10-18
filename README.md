@@ -52,7 +52,9 @@ still be requested explicitly.
    - It checks the requested quant types. It drops `MXFP4_MOE` for dense models, where the output would be a copy of `Q8_0`.
    - It estimates disk need and picks the smallest runner with enough disk.
 2. **Safetensors pipeline:**
-   1. Download the model.
+   1. Download the model. If the repo ships Mistral's native format (`params.json`, `consolidated*.safetensors`,
+      `tekken.json`), download that instead of the HF-format weights and convert with `--mistral-format`.
+      Newer Mistral models need this, because their HF tokenizer only loads in transformers 5.
    2. If F32/F16 were requested and any source tensor is not BF16, make them directly from the safetensors.
    3. Make a little-endian BF16 intermediate. For vision or audio models (`vision_config`/`audio_config` in
       `config.json`), also export an F16 projector, `mmproj-<Model>-BE-F16.gguf`. Then delete the safetensors.
@@ -60,9 +62,12 @@ still be requested explicitly.
       the BF16 intermediate holds the source weights exactly, and `llama-quantize` is much faster than another
       `convert_hf_to_gguf.py` pass, which is mostly single-threaded and takes about 39 s per billion parameters.
       Outputs over 48 GB are split with `llama-gguf-split`.
-   5. Byte-swap each output to big-endian, upload it and delete it locally. This runs on a background thread
-      while the next output is converted or quantized. A new output starts only when the disk has room for it.
-   6. Byte-swap and upload BF16 last, because the quant steps need it in little-endian.
+   5. Byte-swap each output to big-endian, upload it and delete it locally. This runs on background threads
+      while the next output is converted or quantized: 1 thread below 16 vCPU, 2 on 16 vCPU, 3 on 32 vCPU.
+      A new output starts only when the disk has room for it.
+   6. The BF16 output is byte-swapped and uploaded from a copy right after the intermediate is made, if the disk
+      has room for that copy next to a full queue of quants. Otherwise it goes last, because the quant steps
+      need the intermediate in little-endian.
 3. **GGUF pipeline:** handles every `*.gguf` in the repo, including mmproj files and split shards, one at a time:
    1. Download the file.
    2. Byte-swap it to big-endian.
@@ -119,8 +124,9 @@ architectures like `GraniteVisionEmb`) fail this way and leave nothing behind.
 2. **CPU time:** its estimated quantize time fits within `target_minutes`. Quantizing is CPU-bound: a
    granite-4.2-3b run on `4vcpu` sat at 99% CPU and about 15% memory. Runners are billed per vCPU-minute, so
    for that part more vCPUs cost about the same and finish sooner. The estimate uses each quant type's cost
-   measured on that run (`QUANT_CPU_COST` in `scripts/common.py`). If no runner meets the target, the largest
-   runner with enough disk is used.
+   measured on that run (`QUANT_CPU_COST` in `scripts/common.py`). It also accounts for `llama-quantize` not
+   scaling linearly with threads (`THREAD_EFFICIENCY`): about 100% up to 8 vCPU, 75% at 16, and 55% at 32,
+   measured on a granite-4.2-30b run. If no runner meets the target, the largest runner with enough disk is used.
 
 RAM is not a constraint. `convert_hf_to_gguf.py` loads tensors lazily, and `llama-quantize` memory-maps its input
 and works one tensor at a time.
@@ -137,8 +143,8 @@ The safetensors pipeline uses at least `4vcpu`, and GGUF repos usually fit on `2
 list and `target_minutes: 15`, auto picks:
 - Qwen3-0.6B: `4vcpu` (~4 min)
 - granite-4.2-3b: `8vcpu` (~11 min)
-- Qwen3-8B: `16vcpu` (~12 min)
-- 30B+ models: `32vcpu`
+- Qwen3-8B: `32vcpu` (~11 min; `16vcpu` would take ~16 min, so `target_minutes: 20` keeps it there)
+- granite-4.2-30b: `32vcpu` (~39 min)
 
 F32 is the biggest output and raises the peak disk need the most. With a BF16 source over about 12 B parameters,
 the F32 file is split after quantizing, so it briefly needs twice its own size.

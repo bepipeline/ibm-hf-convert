@@ -16,8 +16,9 @@ from huggingface_hub import HfApi, hf_hub_download
 
 from common import (
     CONVERTER_TYPES, OS_RESERVE, PUBLISH_OVERHEAD, QUANT_CPU_COST, QUANT_SIZE_RATIO, RUNNERS, SPLIT_THRESHOLD,
+    THREAD_EFFICIENCY,
     annotate, fmt_bytes, gh_output, gh_summary, has_projector, is_later_shard, is_moe, model_name, output_repo,
-    native_float_type, parse_model_tag, parse_quants, resolve_native, runner_label, select_gguf_files, select_safetensors_files,
+    is_mistral_format, native_float_type, parse_model_tag, parse_quants, resolve_native, runner_label, select_gguf_files, select_safetensors_files,
 )
 from card import base_name
 
@@ -64,9 +65,13 @@ def pick_runner(need: int, minimum: str, override: str, cpu_seconds: float = 0, 
             f"({RUNNERS[-1][3] // 10**9} GB). Drop F32 from the quant list or convert fewer files."
         )
     for size, vcpu in fits:
-        if cpu_seconds / vcpu <= target_minutes * 60:
+        if quantize_minutes(cpu_seconds, vcpu) <= target_minutes:
             return size
     return fits[-1][0]
+
+
+def quantize_minutes(cpu_seconds: float, vcpu: int) -> float:
+    return cpu_seconds / (vcpu * THREAD_EFFICIENCY.get(vcpu, 0.55)) / 60
 
 
 def resolve_namespace(api: HfApi, explicit: str) -> str:
@@ -145,11 +150,12 @@ def main() -> None:
             ("Parameters", f"{params / 1e9:.2f} B" if params else "unknown (estimated from file size)"),
             ("Source dtypes", ", ".join(dtypes) or "unknown"),
             ("Quants", ", ".join(quants)),
+            ("Source format", "Mistral (params.json + consolidated.safetensors, --mistral-format)" if is_mistral_format(siblings) else "Hugging Face"),
             ("Source float type", native_float_type(info.safetensors) + (" (NATIVE)" if "NATIVE" in requested else "")),
             ("Projector", "unknown (config.json not readable)" if config is None
              else "mmproj F16 (vision/audio model)" if has_projector(config) else "none (text-only model)"),
             ("F32/F16 from", "BF16 intermediate (llama-quantize)" if bf16_source else "safetensors (convert_hf_to_gguf.py)"),
-            ("Estimated quantize time", f"~{cpu_seconds / vcpu / 60:.0f} min on {vcpu} vCPU (target {args.target_minutes:g} min)"),
+            ("Estimated quantize time", f"~{quantize_minutes(cpu_seconds, vcpu):.0f} min on {vcpu} vCPU (target {args.target_minutes:g} min)"),
         ]
     elif has_gguf:
         pipeline = "gguf"

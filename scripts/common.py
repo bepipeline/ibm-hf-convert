@@ -10,6 +10,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
@@ -86,6 +87,10 @@ QUANT_CPU_COST = {
 }
 # Uploads hash on the CPU while the next quant runs, which slows quantizing a little.
 PUBLISH_OVERHEAD = 1.15
+# llama-quantize doesn't scale linearly with threads. Measured: 8 vCPU ~1.0 (granite-4.2-3b, estimate matched);
+# 32 vCPU 0.64 for K-quants and 0.46 overall (granite-4.2-30b, with F32/F16 uploads competing for disk).
+# 16 vCPU is interpolated.
+THREAD_EFFICIENCY = {2: 1.0, 4: 1.0, 8: 1.0, 16: 0.75, 32: 0.55}
 
 # Produced straight from safetensors by convert_hf_to_gguf.py instead of llama-quantize.
 CONVERTER_TYPES = ("F32", "F16")
@@ -174,20 +179,33 @@ def _matches(name: str, patterns) -> bool:
     return any(fnmatch.fnmatch(name, p) for p in patterns)
 
 
+def is_mistral_format(siblings) -> bool:
+    """Mistral's native layout: params.json + consolidated*.safetensors + tekken.json / tokenizer.model*.
+
+    llama.cpp converts it with --mistral-format (via mistral-common). Newer Mistral repos need this: their
+    HF-format tokenizer only loads in transformers 5, newer than the one llama.cpp's converter pins.
+    """
+    names = [Path(s.rfilename).name for s in siblings if not s.rfilename.startswith("original/")]
+    return ("params.json" in names
+            and any(n.startswith("consolidated") and n.endswith(".safetensors") for n in names)
+            and any(n == "tekken.json" or n.startswith("tokenizer.model") for n in names))
+
+
 def select_safetensors_files(siblings) -> list[tuple[str, int]]:
-    """Files needed by convert_hf_to_gguf.py: weights + config/tokenizer, minus other formats and duplicates."""
-    files = [(s.rfilename, s.size or 0) for s in siblings]
-    st = [f for f, _ in files if f.endswith(".safetensors") and not f.startswith("original/")]
-    # Mistral repos ship both HF-format shards and a duplicate consolidated.safetensors.
-    drop_consolidated = any(not Path(f).name.startswith("consolidated") for f in st)
+    """Files needed by convert_hf_to_gguf.py: weights + config/tokenizer, minus other formats and duplicates.
+
+    Mistral repos ship the weights twice (HF-format shards and consolidated*.safetensors); keep only the set
+    matching the format we convert from.
+    """
+    mistral = is_mistral_format(siblings)
     selected = []
-    for name, size in files:
-        base = Path(name).name
+    for s in siblings:
+        name, base = s.rfilename, Path(s.rfilename).name
         if name.startswith("original/") or _matches(base, SAFETENSORS_EXCLUDE):
             continue
-        if drop_consolidated and base.startswith("consolidated") and base.endswith(".safetensors"):
+        if base.endswith(".safetensors") and base.startswith("consolidated") != mistral:
             continue
-        selected.append((name, size))
+        selected.append((name, s.size or 0))
     return selected
 
 
@@ -467,19 +485,28 @@ class Uploader:
 # Background publishing
 # ---------------------------------------------------------------------------
 
+def default_publish_workers() -> int:
+    """Parallel byte-swap + upload jobs. One kept up on 8 vCPU, but on a 32-vCPU 30B run quantizing waited
+    ~23 min for a single worker (each swap runs at ~140 MB/s and each upload at ~250 MB/s)."""
+    cpu = os.cpu_count() or 1
+    return 1 if cpu < 16 else 2 if cpu < 32 else 3
+
+
 class Publisher:
-    """Runs byte-swap + upload jobs on one background thread so the next output can be produced meanwhile.
+    """Runs byte-swap + upload jobs on background threads so the next output can be produced meanwhile.
 
     Before starting a new output, call wait_for_room(): it blocks until the queue is short and the disk
     has room for that output, so overlapping never needs more disk than the planner budgeted for.
     Jobs must handle their own errors (record them in Results).
     """
 
-    def __init__(self, work: Path, max_pending: int = 4):
+    def __init__(self, work: Path, workers: int | None = None, max_pending: int | None = None):
         self.work = work
-        self.max_pending = max_pending
-        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="publish")
+        self.workers = workers or default_publish_workers()
+        self.max_pending = max_pending or self.workers + 3
+        self.pool = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="publish")
         self.pending: list[Future] = []
+        print(f"[publish] {self.workers} worker(s), up to {self.max_pending} queued output(s)", flush=True)
 
     def submit(self, fn, *args) -> None:
         self.pending.append(self.pool.submit(fn, *args))
@@ -507,20 +534,25 @@ class Publisher:
 
 @dataclass
 class Results:
+    """Per-output outcomes; written from the main thread and the publisher threads."""
     rows: list[tuple[str, str, str]] = field(default_factory=list)  # (item, status, detail)
     failed: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def ok(self, item: str, detail: str = "") -> None:
-        self.rows.append((item, "uploaded", detail))
+        with self.lock:
+            self.rows.append((item, "uploaded", detail))
 
     def skip(self, item: str, reason: str) -> None:
         annotate("warning", f"Skipped {item}: {reason}")
-        self.rows.append((item, "skipped", reason))
+        with self.lock:
+            self.rows.append((item, "skipped", reason))
 
     def fail(self, item: str, err: BaseException) -> None:
-        self.failed += 1
         annotate("error", f"{item} failed: {err}")
-        self.rows.append((item, "failed", str(err).splitlines()[0] if str(err) else type(err).__name__))
+        with self.lock:
+            self.failed += 1
+            self.rows.append((item, "failed", str(err).splitlines()[0] if str(err) else type(err).__name__))
 
     def write_summary(self, title: str) -> None:
         lines = [f"### {title}", "", "| Item | Status | Detail |", "|---|---|---|"]
