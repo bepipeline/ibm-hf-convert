@@ -28,7 +28,7 @@ on:
         default: false
       llama_cpp_ref:
         type: string
-        default: master
+        default: latest
     secrets:
       HF_TOKEN:
         required: true
@@ -88,6 +88,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: model-card
-          path: ${{ github.workspace }}/work/card/README.md
+          # README.md plus the copied license/image files (hidden dirs like .eval_results are skipped)
+          path: ${{ github.workspace }}/work/card/
           if-no-files-found: ignore
           retention-days: 7

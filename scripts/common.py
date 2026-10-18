@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,6 +73,18 @@ QUANT_SIZE_RATIO = {
     "TQ1_0": 0.14,
     "Q1_0": 0.10,
 }
+
+# llama-quantize CPU cost in vCPU-seconds per billion parameters on Blacksmith ARM, measured from
+# ibm-granite/granite-4.2-3b on a 4-vCPU runner (wall seconds x 4 / 3.66 B). Unmeasured types are estimates.
+QUANT_CPU_COST = {
+    "Q8_0": 17, "Q4_0": 18, "Q4_1": 15, "Q5_0": 15, "Q5_1": 16, "MXFP4_MOE": 20,
+    "Q1_0": 18, "Q2_0": 18, "TQ1_0": 20, "TQ2_0": 20,
+    "Q2_K": 69, "Q3_K": 52, "Q3_K_S": 52, "Q3_K_M": 52, "Q3_K_L": 56,
+    "Q4_K": 101, "Q4_K_S": 101, "Q4_K_M": 101, "Q5_K": 86, "Q5_K_S": 86, "Q5_K_M": 86, "Q6_K": 56,
+    "IQ4_NL": 246, "IQ4_XS": 250,
+}
+# Uploads hash on the CPU while the next quant runs, which slows quantizing a little.
+PUBLISH_OVERHEAD = 1.15
 
 # Produced straight from safetensors by convert_hf_to_gguf.py instead of llama-quantize.
 CONVERTER_TYPES = ("F32", "F16")
@@ -284,16 +297,21 @@ class Endian:
 
     def to_big(self, path: Path) -> None:
         if gguf_endianness(path) == "BIG":
-            print(f"{path.name} is already big-endian")
+            print(f"[publish] {path.name} is already big-endian", flush=True)
             return
-        print(f"+ gguf_convert_endian.py {path.name} big", flush=True)
+        start = time.monotonic()
         # The script asks for confirmation on stdin and exits 0 even when it does nothing.
-        subprocess.run(
+        # Output is captured because this runs on the publisher thread next to other logs.
+        proc = subprocess.run(
             [sys.executable, str(self.script), str(path), "big"],
-            input="YES\n", text=True, check=True, env=self._env(),
+            input="YES\n", capture_output=True, text=True, env=self._env(),
         )
+        if proc.returncode != 0:
+            print(proc.stdout + proc.stderr, file=sys.stderr, flush=True)
+            raise subprocess.CalledProcessError(proc.returncode, proc.args)
         if gguf_endianness(path) != "BIG":
             raise RuntimeError(f"{path} is still little-endian after conversion")
+        print(f"[publish] {path.name}: big-endian in {time.monotonic() - start:.0f}s", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -329,13 +347,15 @@ class Uploader:
             return
         for attempt in range(1, 4):
             try:
-                print(f"Uploading {path_in_repo} ({fmt_bytes(size)})", flush=True)
+                start = time.monotonic()
+                print(f"[publish] uploading {path_in_repo} ({fmt_bytes(size)})", flush=True)
                 self.api.upload_file(
                     path_or_fileobj=str(path),
                     path_in_repo=path_in_repo,
                     repo_id=self.out_repo,
                     commit_message=f"Add {path_in_repo} (big-endian)",
                 )
+                print(f"[publish] uploaded {path_in_repo} in {time.monotonic() - start:.0f}s", flush=True)
                 return
             except Exception as e:  # network hiccups on multi-GB uploads
                 if attempt == 3:
@@ -355,6 +375,44 @@ class Uploader:
         else:
             files = self.uploaded
         card.publish_card(self.api, self.source_repo, self.out_repo, files, work, self.enabled)
+
+
+# ---------------------------------------------------------------------------
+# Background publishing
+# ---------------------------------------------------------------------------
+
+class Publisher:
+    """Runs byte-swap + upload jobs on one background thread so the next output can be produced meanwhile.
+
+    Before starting a new output, call wait_for_room(): it blocks until the queue is short and the disk
+    has room for that output, so overlapping never needs more disk than the planner budgeted for.
+    Jobs must handle their own errors (record them in Results).
+    """
+
+    def __init__(self, work: Path, max_pending: int = 2):
+        self.work = work
+        self.max_pending = max_pending
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="publish")
+        self.pending: list[Future] = []
+
+    def submit(self, fn, *args) -> None:
+        self.pending.append(self.pool.submit(fn, *args))
+
+    def wait_for_room(self, next_bytes: float) -> None:
+        self.work.mkdir(parents=True, exist_ok=True)
+        while True:
+            self.pending = [f for f in self.pending if not f.done()]
+            full = len(self.pending) >= self.max_pending
+            tight = shutil.disk_usage(self.work).free < next_bytes * 1.05 + 2 * GIB
+            if not self.pending or not (full or tight):
+                return
+            print(f"[publish] waiting for {len(self.pending)} upload(s) to free {'queue' if full else 'disk'}", flush=True)
+            wait(self.pending, return_when=FIRST_COMPLETED)
+
+    def drain(self) -> None:
+        wait(self.pending)
+        self.pending = []
+        self.pool.shutdown()
 
 
 # ---------------------------------------------------------------------------

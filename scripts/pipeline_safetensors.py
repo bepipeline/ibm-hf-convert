@@ -3,10 +3,13 @@
 
 Disk-frugal ordering:
   1. download safetensors
-  2. F32/F16 straight from safetensors; each is byte-swapped, uploaded and deleted
+  2. F32/F16 straight from safetensors, unless every source tensor is BF16
   3. little-endian BF16 intermediate; safetensors deleted
-  4. each quant from the BF16 intermediate; split if > 48 GB, byte-swapped, uploaded, deleted
-  5. BF16 intermediate byte-swapped and uploaded last (it must stay little-endian for quantizing)
+  4. each quant from the BF16 intermediate (F32/F16 too for a BF16 source); split if > 48 GB
+  5. BF16 intermediate published last (it must stay little-endian for quantizing)
+
+Every output is byte-swapped, uploaded and deleted on a background thread while the next one is
+produced, as long as the disk has room for both.
 """
 
 from __future__ import annotations
@@ -17,17 +20,31 @@ import shutil
 import sys
 from pathlib import Path
 
+from gguf import GGMLQuantizationType, GGUFReader
 from huggingface_hub import HfApi, snapshot_download
 
 from common import (
-    CONVERTER_TYPES, SPLIT_MAX_SIZE, SPLIT_THRESHOLD, Endian, Results, Uploader,
-    check_free_disk, fmt_bytes, group, parse_quants, run, select_safetensors_files,
+    CONVERTER_TYPES, QUANT_SIZE_RATIO, SPLIT_MAX_SIZE, SPLIT_THRESHOLD, Endian, Publisher, Results, Uploader,
+    annotate, check_free_disk, fmt_bytes, group, parse_quants, run, select_safetensors_files,
 )
 from card import base_name
 
 
 def shards(directory: Path) -> list[Path]:
     return sorted(directory.glob("*.gguf"))
+
+
+def converter_type_mismatches(intermediate: list[Path], out_files: list[Path], qtype: str) -> list[str]:
+    """Tensors in an F32/F16 made by llama-quantize whose type differs from convert_hf_to_gguf.py --outtype <qtype>.
+
+    The converter writes a tensor as BF16 in the intermediate exactly when it would write it as F32/F16 there, but
+    llama-quantize skips some architecture-specific tensors and converts some the converter keeps in F32.
+    """
+    target = GGMLQuantizationType[qtype]
+    want = {t.name: target if t.tensor_type == GGMLQuantizationType.BF16 else t.tensor_type
+            for f in intermediate for t in GGUFReader(f).tensors}
+    got = {t.name: t.tensor_type.name for f in out_files for t in GGUFReader(f).tensors}
+    return [f"{n} is {got.get(n, 'missing')}, converter writes {w.name}" for n, w in want.items() if got.get(n) != w.name]
 
 
 def main() -> None:
@@ -46,9 +63,6 @@ def main() -> None:
 
     name = base_name(args.model)
     quants = parse_quants(args.quants)
-    direct = [q for q in quants if q in CONVERTER_TYPES]
-    quantized = [q for q in quants if q not in CONVERTER_TYPES and q != "BF16"]
-    need_bf16 = bool(quantized) or "BF16" in quants
 
     work: Path = args.work.resolve()
     src, out_root, bf16_dir = work / "src", work / "out", work / "bf16"
@@ -57,87 +71,105 @@ def main() -> None:
     gguf_split = args.bin / "llama-gguf-split"
     endian = Endian(args.llama_cpp)
     uploader = Uploader(args.out_repo, args.model, enabled=not args.no_upload, private=args.private)
+    publisher = Publisher(work)
     results = Results()
 
     if args.need_bytes:
         check_free_disk(work, args.need_bytes)
 
-    def publish(files: list[Path], qtype: str) -> None:
-        """Byte-swap, upload and delete one output (single file or split shards)."""
-        single = len(files) == 1
-        total = sum(f.stat().st_size for f in files)
-        for f in files:
-            endian.to_big(f)
-            uploader.upload(f, f.name if single else f"{qtype}/{f.name}")
-            if not args.no_upload:
-                f.unlink()
-        results.ok(qtype, f"{len(files)} file(s), {fmt_bytes(total)}")
+    info = HfApi().model_info(args.model, files_metadata=True)
+    files = select_safetensors_files(info.siblings)
+    bf16_bytes = 2 * info.safetensors.total if info.safetensors else sum(s for f, s in files if f.endswith(".safetensors"))
+    # A BF16-only source survives the BF16 intermediate losslessly, so llama-quantize can make F32/F16 from it,
+    # which is far faster than a mostly single-threaded converter pass each.
+    bf16_source = bool(info.safetensors) and set(info.safetensors.parameters) == {"BF16"}
+    direct = [] if bf16_source else [q for q in quants if q in CONVERTER_TYPES]
+    quantized = [q for q in quants if q not in direct and q != "BF16"]
+    need_bf16 = bool(quantized) or "BF16" in quants
 
-    with group(f"Download {args.model}"):
-        files = [f for f, _ in select_safetensors_files(HfApi().model_info(args.model, files_metadata=True).siblings)]
-        snapshot_download(args.model, local_dir=src, allow_patterns=files)
-
-    uploader.ensure_repo()
-
-    # 2. F32 / F16 straight from safetensors
-    for qtype in direct:
-        out_dir = out_root / qtype
+    def publish(out_files: list[Path], qtype: str, out_dir: Path) -> None:
+        """Byte-swap, upload and delete one output (single file or split shards). Runs on the publisher thread."""
         try:
-            with group(f"{qtype}: convert"):
-                out_dir.mkdir(parents=True, exist_ok=True)
-                run([sys.executable, convert, src, "--outtype", qtype.lower(),
-                     "--outfile", out_dir / f"{name}-BE.{qtype}.gguf", "--split-max-size", SPLIT_MAX_SIZE])
-            with group(f"{qtype}: big-endian + upload"):
-                publish(shards(out_dir), qtype)
+            single = len(out_files) == 1
+            total = sum(f.stat().st_size for f in out_files)
+            for f in out_files:
+                endian.to_big(f)
+                uploader.upload(f, f.name if single else f"{qtype}/{f.name}")
+                if not args.no_upload:
+                    f.unlink()
+            results.ok(qtype, f"{len(out_files)} file(s), {fmt_bytes(total)}")
         except Exception as e:
             results.fail(qtype, e)
         finally:
             if not args.no_upload:
                 shutil.rmtree(out_dir, ignore_errors=True)
 
+    with group(f"Download {args.model}"):
+        snapshot_download(args.model, local_dir=src, allow_patterns=[f for f, _ in files])
+
+    uploader.ensure_repo()
+
+    # 2. F32 / F16 straight from safetensors (not BF16 sources)
+    for qtype in direct:
+        out_dir = out_root / qtype
+        publisher.wait_for_room(QUANT_SIZE_RATIO[qtype] * bf16_bytes)
+        try:
+            with group(f"{qtype}: convert"):
+                out_dir.mkdir(parents=True, exist_ok=True)
+                run([sys.executable, convert, src, "--outtype", qtype.lower(),
+                     "--outfile", out_dir / f"{name}-BE-{qtype}.gguf", "--split-max-size", SPLIT_MAX_SIZE])
+        except Exception as e:
+            results.fail(qtype, e)
+            shutil.rmtree(out_dir, ignore_errors=True)
+            continue
+        publisher.submit(publish, shards(out_dir), qtype, out_dir)
+
     # 3. BF16 intermediate (little-endian, input for llama-quantize)
     intermediate: Path | None = None
     if need_bf16:
+        publisher.wait_for_room(bf16_bytes)
         try:
             with group("BF16 intermediate: convert"):
                 bf16_dir.mkdir(parents=True, exist_ok=True)
                 run([sys.executable, convert, src, "--outtype", "bf16",
-                     "--outfile", bf16_dir / f"{name}-BE.BF16.gguf", "--split-max-size", SPLIT_MAX_SIZE])
+                     "--outfile", bf16_dir / f"{name}-BE-BF16.gguf", "--split-max-size", SPLIT_MAX_SIZE])
                 intermediate = shards(bf16_dir)[0]  # llama-quantize finds the other shards itself
+                bf16_bytes = sum(f.stat().st_size for f in shards(bf16_dir))
         except Exception as e:
             for qtype in quantized + (["BF16"] if "BF16" in quants else []):
                 results.fail(qtype, RuntimeError(f"BF16 intermediate failed: {e}"))
     shutil.rmtree(src, ignore_errors=True)
 
-    # 4. llama-quantize types
+    # 4. llama-quantize types (including F32 / F16 for BF16 sources)
     if intermediate:
         for qtype in quantized:
             out_dir = out_root / qtype
+            est = QUANT_SIZE_RATIO[qtype] * bf16_bytes
+            publisher.wait_for_room(2 * est if est > SPLIT_THRESHOLD else est)
             try:
                 with group(f"{qtype}: quantize"):
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    out = out_dir / f"{name}-BE.{qtype}.gguf"
+                    out = out_dir / f"{name}-BE-{qtype}.gguf"
                     run([quantize, intermediate, out, qtype, args.threads])
                     if out.stat().st_size > SPLIT_THRESHOLD:
-                        run([gguf_split, "--split", "--split-max-size", SPLIT_MAX_SIZE, out, out_dir / f"{name}-BE.{qtype}"])
+                        run([gguf_split, "--split", "--split-max-size", SPLIT_MAX_SIZE, out, out_dir / f"{name}-BE-{qtype}"])
                         out.unlink()
-                with group(f"{qtype}: big-endian + upload"):
-                    publish(shards(out_dir), qtype)
+                    if qtype in CONVERTER_TYPES and (diff := converter_type_mismatches(shards(bf16_dir), shards(out_dir), qtype)):
+                        annotate("warning", f"{qtype}: {len(diff)} tensor type(s) differ from convert_hf_to_gguf.py: {'; '.join(diff[:5])}")
             except Exception as e:
                 results.fail(qtype, e)
-            finally:
-                if not args.no_upload:
-                    shutil.rmtree(out_dir, ignore_errors=True)
+                shutil.rmtree(out_dir, ignore_errors=True)
+                continue
+            publisher.submit(publish, shards(out_dir), qtype, out_dir)
 
         # 5. BF16 last: byte-swapping destroys it as a quantize input
         if "BF16" in quants:
-            try:
-                with group("BF16: big-endian + upload"):
-                    publish(shards(bf16_dir), "BF16")
-            except Exception as e:
-                results.fail("BF16", e)
-        if not args.no_upload:
+            publisher.submit(publish, shards(bf16_dir), "BF16", bf16_dir)
+        elif not args.no_upload:
             shutil.rmtree(bf16_dir, ignore_errors=True)
+
+    with group("Waiting for uploads"):
+        publisher.drain()
 
     try:
         with group("Model card"):

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Every GGUF in a Hugging Face repo -> big-endian -> Hugging Face, one file at a time."""
+"""Every GGUF in a Hugging Face repo -> big-endian -> Hugging Face, one file at a time
+(the next download overlaps the previous byte-swap + upload)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ from pathlib import Path
 from huggingface_hub import HfApi, hf_hub_download
 
 from common import (
-    Endian, Results, UnsupportedTensorType, Uploader, check_free_disk, fmt_bytes, group, select_gguf_files,
+    Endian, Publisher, Results, UnsupportedTensorType, Uploader, check_free_disk, fmt_bytes, group,
+    select_gguf_files,
 )
 from card import base_name, be_filename
 
@@ -31,6 +33,7 @@ def main() -> None:
     base = base_name(args.model)
     endian = Endian(args.llama_cpp)
     uploader = Uploader(args.out_repo, args.model, enabled=not args.no_upload, private=args.private)
+    publisher = Publisher(work)
     results = Results()
 
     if args.need_bytes:
@@ -43,25 +46,39 @@ def main() -> None:
 
     uploader.ensure_repo()
 
-    for rel, size in files:
-        path = work / rel
+    def publish(path: Path, rel: str, size: int) -> None:
+        """Byte-swap, upload and delete one file. Runs on the publisher thread."""
         try:
-            with group(f"{rel} ({fmt_bytes(size)})"):
-                hf_hub_download(args.model, rel, local_dir=work)
-                try:
-                    endian.check(path)
-                except UnsupportedTensorType as e:
-                    results.skip(rel, str(e))
-                    continue
-                endian.to_big(path)
-                target = be_filename(base, rel)
-                uploader.upload(path, target)
-                results.ok(rel, f"→ {target}, {fmt_bytes(size)}")
+            endian.to_big(path)
+            target = be_filename(base, rel)
+            uploader.upload(path, target)
+            results.ok(rel, f"→ {target}, {fmt_bytes(size)}")
         except Exception as e:
             results.fail(rel, e)
         finally:
             if not args.no_upload:
                 path.unlink(missing_ok=True)
+
+    # The next file downloads while the previous one is byte-swapped and uploaded.
+    for rel, size in files:
+        path = work / rel
+        publisher.wait_for_room(size)
+        try:
+            with group(f"{rel} ({fmt_bytes(size)})"):
+                hf_hub_download(args.model, rel, local_dir=work)
+                endian.check(path)
+        except UnsupportedTensorType as e:
+            results.skip(rel, str(e))
+        except Exception as e:
+            results.fail(rel, e)
+        else:
+            publisher.submit(publish, path, rel, size)
+            continue
+        if not args.no_upload:
+            path.unlink(missing_ok=True)
+
+    with group("Waiting for uploads"):
+        publisher.drain()
 
     try:
         with group("Model card"):

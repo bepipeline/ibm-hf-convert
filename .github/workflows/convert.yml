@@ -17,18 +17,22 @@ on:
         type: string
         default: ""
       runner:
-        description: "Runner size (auto = smallest Blacksmith ARM runner with enough disk)"
+        description: "Runner size (auto = smallest Blacksmith ARM runner with enough disk that meets target_minutes)"
         type: choice
         options: [auto, 2vcpu, 4vcpu, 8vcpu, 16vcpu, 32vcpu]
         default: auto
+      target_minutes:
+        description: "Auto runner: smallest runner expected to finish quantizing within this many minutes"
+        type: number
+        default: 15
       private:
         description: "Create the output repo as private (only when it doesn't exist yet)"
         type: boolean
         default: false
       llama_cpp_ref:
-        description: "llama.cpp branch, tag or commit"
+        description: "llama.cpp release (latest or bNNNN, uses prebuilt tools) or a branch/commit (builds from source)"
         type: string
-        default: master
+        default: latest
 
 permissions:
   contents: read
@@ -75,6 +79,7 @@ jobs:
           INPUT_QUANTS: ${{ inputs.quants }}
           INPUT_HF_NAMESPACE: ${{ inputs.hf_namespace }}
           INPUT_RUNNER: ${{ inputs.runner }}
+          INPUT_TARGET_MINUTES: ${{ inputs.target_minutes }}
 
   safetensors:
     name: Safetensors
@@ -128,17 +133,19 @@ jobs:
           name: model-card
           path: ${{ runner.temp }}/card
 
-      - name: Commit <model>/README.md
+      - name: Commit models/<model>/README.md and its images
         if: steps.card.outcome == 'success'
         env:
-          MODEL_DIR: ${{ needs.plan.outputs.base_name }}
+          MODEL_DIR: models/${{ needs.plan.outputs.base_name }}
           SOURCE: ${{ needs.plan.outputs.repo_id }}
         run: |
+          # Mirror the card folder so images referenced by relative path render on GitHub too.
+          rm -rf "$MODEL_DIR"
           mkdir -p "$MODEL_DIR"
-          cp "$RUNNER_TEMP/card/README.md" "$MODEL_DIR/README.md"
-          git add "$MODEL_DIR/README.md"
+          cp -R "$RUNNER_TEMP/card/." "$MODEL_DIR/"
+          git add -A "$MODEL_DIR"
           if git diff --cached --quiet; then
-            echo "$MODEL_DIR/README.md is unchanged"
+            echo "$MODEL_DIR is unchanged"
             exit 0
           fi
           git config user.name "github-actions[bot]"

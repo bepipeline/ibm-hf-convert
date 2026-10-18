@@ -1,15 +1,17 @@
 name: Set up llama.cpp
 description: >
-  Check out ggml-org/llama.cpp, install the Python deps, and (full mode) build
-  llama-quantize + llama-gguf-split.
+  Check out ggml-org/llama.cpp, install the Python deps, and (full mode) fetch llama-quantize +
+  llama-gguf-split: prebuilt from the matching release when there is one, otherwise built from source.
 
 inputs:
   ref:
-    description: llama.cpp branch, tag or commit
-    default: master
+    description: >
+      "latest" (newest bNNNN release), a release tag like b11718, or any branch/commit
+      (branches and commits are built from source).
+    default: latest
   full:
     description: >
-      "true": full checkout, convert_hf_to_gguf.py deps and tool build (safetensors pipeline).
+      "true": full checkout, convert_hf_to_gguf.py deps and llama.cpp tools (safetensors pipeline).
       "false": gguf-py only (GGUF pipeline).
     default: "false"
 
@@ -20,25 +22,50 @@ outputs:
   bin:
     description: Directory containing llama-quantize and llama-gguf-split (full mode)
     value: ${{ github.workspace }}/llama-bin
+  ref:
+    description: The llama.cpp ref that was used
+    value: ${{ steps.ref.outputs.ref }}
 
 runs:
   using: composite
   steps:
-    - name: Check out llama.cpp
-      uses: actions/checkout@v7
-      with:
-        repository: ggml-org/llama.cpp
-        ref: ${{ inputs.ref }}
-        path: llama.cpp
-        sparse-checkout: ${{ inputs.full != 'true' && 'gguf-py' || '' }}
-        persist-credentials: false
-
     - name: Set up Python
       uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       with:
         python-version: "3.12"
         activate-environment: "true"
         enable-cache: "false"
+
+    - name: Resolve llama.cpp ref
+      id: ref
+      shell: bash
+      env:
+        REF: ${{ inputs.ref }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ "$REF" = "latest" ]; then
+          REF=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30" | python -c '
+        import json, re, sys
+        for r in json.load(sys.stdin):
+            tag = r["tag_name"]
+            if re.fullmatch(r"b\d+", tag) and any(a["name"] == "llama-" + tag + "-bin-ubuntu-arm64.tar.gz" for a in r["assets"]):
+                print(tag)
+                break
+        ')
+          [ -n "$REF" ] || { echo "::error::No llama.cpp release with ubuntu-arm64 binaries found"; exit 1; }
+        fi
+        echo "Using llama.cpp $REF"
+        echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+    - name: Check out llama.cpp
+      uses: actions/checkout@v7
+      with:
+        repository: ggml-org/llama.cpp
+        ref: ${{ steps.ref.outputs.ref }}
+        path: llama.cpp
+        sparse-checkout: ${{ inputs.full != 'true' && 'gguf-py' || '' }}
+        persist-credentials: false
 
     - name: Install Python deps
       shell: bash
@@ -54,22 +81,46 @@ runs:
           uv pip install 'huggingface_hub[hf_xet]' ./llama.cpp/gguf-py
         fi
 
+    - name: Download prebuilt llama.cpp tools
+      id: prebuilt
+      if: inputs.full == 'true'
+      shell: bash
+      env:
+        REF: ${{ steps.ref.outputs.ref }}
+      run: |
+        case "$(uname -m)" in aarch64) arch=arm64 ;; x86_64) arch=x64 ;; *) arch=none ;; esac
+        url="https://github.com/ggml-org/llama.cpp/releases/download/$REF/llama-$REF-bin-ubuntu-$arch.tar.gz"
+        if [[ "$REF" =~ ^b[0-9]+$ ]] && curl -fsSL -o "$RUNNER_TEMP/llama.tar.gz" "$url"; then
+          mkdir -p llama-bin
+          tar -xzf "$RUNNER_TEMP/llama.tar.gz" -C llama-bin --strip-components=1
+          libs="$GITHUB_WORKSPACE/llama-bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          echo "LD_LIBRARY_PATH=$libs" >> "$GITHUB_ENV"
+          if LD_LIBRARY_PATH="$libs" ldd llama-bin/llama-quantize llama-bin/llama-gguf-split | grep 'not found'; then
+            echo "::error::Prebuilt llama.cpp tools are missing shared libraries"
+            exit 1
+          fi
+          echo "found=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "No prebuilt binaries for $REF ($arch); building from source"
+          echo "found=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Resolve llama.cpp commit
       id: sha
-      if: inputs.full == 'true'
+      if: inputs.full == 'true' && steps.prebuilt.outputs.found != 'true'
       shell: bash
       run: echo "sha=$(git -C llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
     - name: Cache llama.cpp tools
       id: cache
-      if: inputs.full == 'true'
+      if: inputs.full == 'true' && steps.prebuilt.outputs.found != 'true'
       uses: actions/cache@v6
       with:
         path: llama-bin
         key: llama-bin-${{ runner.os }}-${{ runner.arch }}-${{ steps.sha.outputs.sha }}
 
     - name: Build llama-quantize and llama-gguf-split
-      if: inputs.full == 'true' && steps.cache.outputs.cache-hit != 'true'
+      if: inputs.full == 'true' && steps.prebuilt.outputs.found != 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         cmake -S llama.cpp -B llama.cpp/build \
