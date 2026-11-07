@@ -12,6 +12,10 @@ on:
         description: "Output types for safetensors models (ignored for GGUF repos)"
         type: string
         default: NATIVE,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K_S,Q3_K_M,Q3_K_L,Q4_K_S,Q4_K_M,Q5_K_S,Q5_K_M,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE
+      tensor_types:
+        description: 'llama-quantize --tensor-type overrides, space-separated, e.g. blk\.4\.ffn_down=bf16 (saved as models/<Model>/tensor-type.txt; empty reuses that file)'
+        type: string
+        default: ""
       hf_namespace:
         description: "HF user/org to upload to (default: HF_NAMESPACE variable, else the HF_TOKEN owner)"
         type: string
@@ -53,6 +57,7 @@ jobs:
       quant_tag: ${{ steps.plan.outputs.quant_tag }}
       out_repo: ${{ steps.plan.outputs.out_repo }}
       quants: ${{ steps.plan.outputs.quants }}
+      tensor_types: ${{ steps.plan.outputs.tensor_types }}
       runner: ${{ steps.plan.outputs.runner }}
       need_bytes: ${{ steps.plan.outputs.need_bytes }}
       repo_existed: ${{ steps.plan.outputs.repo_existed }}
@@ -78,6 +83,7 @@ jobs:
           HF_HUB_DISABLE_PROGRESS_BARS: "1"
           INPUT_MODEL: ${{ inputs.model }}
           INPUT_QUANTS: ${{ inputs.quants }}
+          INPUT_TENSOR_TYPES: ${{ inputs.tensor_types }}
           INPUT_HF_NAMESPACE: ${{ inputs.hf_namespace }}
           INPUT_RUNNER: ${{ inputs.runner }}
           INPUT_TARGET_MINUTES: ${{ inputs.target_minutes }}
@@ -92,6 +98,7 @@ jobs:
       model: ${{ needs.plan.outputs.repo_id }}
       out_repo: ${{ needs.plan.outputs.out_repo }}
       quants: ${{ needs.plan.outputs.quants }}
+      tensor_types: ${{ needs.plan.outputs.tensor_types }}
       need_bytes: ${{ needs.plan.outputs.need_bytes }}
       private: ${{ inputs.private }}
       llama_cpp_ref: ${{ inputs.llama_cpp_ref }}
@@ -170,11 +177,12 @@ jobs:
           name: model-card
           path: ${{ runner.temp }}/card
 
-      - name: Commit models/<model>/README.md and its images
+      - name: Commit models/<model>/README.md, its images and tensor-type.txt
         if: steps.card.outcome == 'success'
         env:
           MODEL_DIR: models/${{ needs.plan.outputs.base_name }}
           SOURCE: ${{ needs.plan.outputs.repo_id }}
+          TENSOR_TYPES: ${{ needs.plan.outputs.tensor_types }}
         run: |
           # Drop a folder that differs only in case (e.g. from before names were title-cased);
           # two such folders break checkouts on case-insensitive file systems like macOS.
@@ -189,6 +197,10 @@ jobs:
           rm -rf "$MODEL_DIR"
           mkdir -p "$MODEL_DIR"
           cp -R "$RUNNER_TEMP/card/." "$MODEL_DIR/"
+          # The planner passes the given overrides, else the ones it loaded from this file, so later runs reuse them.
+          if [ -n "$TENSOR_TYPES" ]; then
+            printf '%s\n' "$TENSOR_TYPES" | tr ' ' '\n' > "$MODEL_DIR/tensor-type.txt"
+          fi
           git add -A "$MODEL_DIR"
           if git diff --cached --quiet; then
             echo "$MODEL_DIR is unchanged"

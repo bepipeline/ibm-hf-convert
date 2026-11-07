@@ -19,6 +19,10 @@ on:
         description: Comma-separated output types
         type: string
         required: true
+      tensor_types:
+        description: Space-separated llama-quantize --tensor-type overrides
+        type: string
+        default: ""
       need_bytes:
         description: Planned disk need in bytes
         type: string
@@ -69,6 +73,7 @@ jobs:
           MODEL: ${{ inputs.model }}
           OUT_REPO: ${{ inputs.out_repo }}
           QUANTS: ${{ inputs.quants }}
+          TENSOR_TYPES: ${{ inputs.tensor_types }}
           NEED_BYTES: ${{ inputs.need_bytes }}
           PRIVATE_FLAG: ${{ inputs.private && '--private' || '' }}
           LLAMA_CPP: ${{ steps.llama.outputs.path }}
@@ -79,6 +84,7 @@ jobs:
             --model "$MODEL" \
             --out-repo "$OUT_REPO" \
             --quants "$QUANTS" \
+            --tensor-types "$TENSOR_TYPES" \
             --llama-cpp "$LLAMA_CPP" \
             --bin "$LLAMA_BIN" \
             --work "$GITHUB_WORKSPACE/work" \

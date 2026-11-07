@@ -28,7 +28,7 @@ from huggingface_hub import HfApi, snapshot_download
 from common import (
     CONVERTER_TYPES, GIB, QUANT_SIZE_RATIO, SPLIT_MAX_SIZE, SPLIT_THRESHOLD, Endian, Publisher, Results, Uploader,
     adapt_tokenizer_config, annotate, check_free_disk, converter_tags_override, has_projector, fmt_bytes, group, parse_quants, resolve_native,
-    is_mistral_format, run, select_safetensors_files,
+    is_mistral_format, parse_tensor_types, run, select_safetensors_files,
 )
 from card import base_name
 
@@ -55,6 +55,7 @@ def main() -> None:
     p.add_argument("--model", required=True, help="source repo id, e.g. Qwen/Qwen3-8B")
     p.add_argument("--out-repo", required=True)
     p.add_argument("--quants", required=True, help="comma-separated, e.g. BF16,Q8_0,Q4_K_M")
+    p.add_argument("--tensor-types", default="", help=r"llama-quantize --tensor-type overrides, space-separated, e.g. blk\.4\.ffn_down=bf16")
     p.add_argument("--llama-cpp", type=Path, required=True, help="llama.cpp checkout")
     p.add_argument("--bin", type=Path, required=True, help="dir with llama-quantize and llama-gguf-split")
     p.add_argument("--work", type=Path, required=True)
@@ -81,6 +82,8 @@ def main() -> None:
 
     info = HfApi().model_info(args.model, files_metadata=True)
     quants = resolve_native(parse_quants(args.quants), info.safetensors)
+    # Applied by llama-quantize to quantized outputs only; F32/F16/BF16 keep every tensor in that type.
+    overrides = [a for t in parse_tensor_types(args.tensor_types) for a in ("--tensor-type", t)]
     files = select_safetensors_files(info.siblings)
     # Converter flags shared by every convert_hf_to_gguf.py call
     src_format = ["--mistral-format"] if is_mistral_format(info.siblings) else []
@@ -202,7 +205,7 @@ def main() -> None:
                 with group(f"{qtype}: quantize"):
                     out_dir.mkdir(parents=True, exist_ok=True)
                     out = out_dir / f"{name}-BE-{qtype}.gguf"
-                    run([quantize, intermediate, out, qtype, args.threads])
+                    run([quantize, *overrides, intermediate, out, qtype, args.threads])
                     if out.stat().st_size > SPLIT_THRESHOLD:
                         run([gguf_split, "--split", "--split-max-size", SPLIT_MAX_SIZE, out, out_dir / f"{name}-BE-{qtype}"])
                         out.unlink()

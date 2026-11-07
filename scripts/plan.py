@@ -11,19 +11,22 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
 
 from common import (
     CONVERTER_TYPES, OS_RESERVE, PUBLISH_OVERHEAD, QUANT_CPU_COST, QUANT_SIZE_RATIO, RUNNERS, SPLIT_THRESHOLD,
-    THREAD_EFFICIENCY,
+    TENSOR_TYPE_FILE, THREAD_EFFICIENCY,
     annotate, fmt_bytes, gh_output, gh_summary, has_projector, is_later_shard, is_moe, model_name, output_repo,
-    is_mistral_format, native_float_type, parse_model_tag, parse_quants, resolve_native, runner_label, select_gguf_files, select_safetensors_files,
+    is_mistral_format, native_float_type, parse_model_tag, parse_quants, parse_tensor_types, resolve_native, runner_label,
+    select_gguf_files, select_safetensors_files,
 )
 from card import base_name
 
 SAFETENSORS_MIN_RUNNER = "4vcpu"  # 12 GB RAM floor for the converter and large embedding tensors
 GGUF_MIN_RUNNER = "2vcpu"
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 
 def safetensors_disk_need(st_bytes: int, bf16_bytes: int, quants: list[str], bf16_source: bool = False) -> int:
@@ -106,10 +109,19 @@ def main() -> None:
     p.add_argument("--runner", default=os.environ.get("INPUT_RUNNER", "auto"))
     p.add_argument("--target-minutes", type=float, default=float(os.environ.get("INPUT_TARGET_MINUTES") or 15),
                    help="auto runner: aim to finish quantizing within this many minutes")
+    p.add_argument("--tensor-types", default=os.environ.get("INPUT_TENSOR_TYPES", ""),
+                   help=f"llama-quantize --tensor-type overrides (default: models/<Model>/{TENSOR_TYPE_FILE})")
     args = p.parse_args()
 
     api = HfApi()
     repo_id, quant_tag = parse_model_tag(args.model)
+    # Given overrides replace the saved ones; either way they go out so the readme job (re)writes the file.
+    tensor_types = parse_tensor_types(args.tensor_types)
+    tensor_types_from = "input"
+    saved = MODELS_DIR / base_name(repo_id) / TENSOR_TYPE_FILE
+    if not tensor_types and saved.exists():
+        tensor_types = parse_tensor_types(saved.read_text())
+        tensor_types_from = f"`{saved.relative_to(MODELS_DIR.parent)}`"
     info = api.model_info(repo_id, files_metadata=True)
     siblings = info.siblings or []
     has_st = any(s.rfilename.endswith(".safetensors") for s in siblings)
@@ -157,8 +169,12 @@ def main() -> None:
             ("F32/F16 from", "BF16 intermediate (llama-quantize)" if bf16_source else "safetensors (convert_hf_to_gguf.py)"),
             ("Estimated quantize time", f"~{quantize_minutes(cpu_seconds, vcpu):.0f} min on {vcpu} vCPU (target {args.target_minutes:g} min)"),
         ]
+        if tensor_types:
+            rows.append(("Tensor type overrides", f"`{' '.join(tensor_types)}` (from {tensor_types_from})".replace("|", "\\|")))
     elif has_gguf:
         pipeline = "gguf"
+        if args.tensor_types.strip():
+            raise SystemExit("tensor_types only applies to safetensors models; GGUF repos are byte-swapped, not quantized")
         files = select_gguf_files(siblings, quant_tag)
         if not files:
             raise SystemExit(f"No GGUF files in {repo_id} match tag {quant_tag!r}")
@@ -187,6 +203,7 @@ def main() -> None:
         base_name=base_name(repo_id),
         out_repo=out_repo,
         quants=",".join(quants),
+        tensor_types=" ".join(tensor_types),
         runner=label,
         need_bytes=need,
         repo_existed=str(repo_existed).lower(),

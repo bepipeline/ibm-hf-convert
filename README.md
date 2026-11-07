@@ -21,6 +21,7 @@ Go to **Actions → Convert to big-endian GGUF → Run workflow**, then enter a 
 |---|---|---|
 | `model` | — | `Qwen/Qwen3-8B` (safetensors) or `unsloth/Qwen3-8B-GGUF` (GGUF). Add `:Q4_K_M` to a GGUF repo to convert only that quant. |
 | `quants` | `NATIVE,Q4_0,Q4_1,Q5_0,Q5_1,Q8_0,Q2_K,Q3_K_S,Q3_K_M,Q3_K_L,Q4_K_S,Q4_K_M,Q5_K_S,Q5_K_M,Q6_K,IQ4_NL,IQ4_XS,MXFP4_MOE` | Safetensors models only. `NATIVE` is the source's own float type (see below). |
+| `tensor_types` | `models/<Model>/tensor-type.txt`, if any | Safetensors models only. `llama-quantize --tensor-type` overrides, see [Tensor type overrides](#tensor-type-overrides-tensor_types). |
 | `hf_namespace` | `HF_NAMESPACE` variable, else the token owner | User or org to upload to. |
 | `runner` | `auto` | Sets the runner size. `auto` picks one as described in [Runner sizing](#runner-sizing). |
 | `target_minutes` | `15` | Used by `auto`: the time budget for quantizing. Raise it to use smaller, cheaper runners. |
@@ -45,6 +46,22 @@ On a z17 (2 vCPU, Granite-4.0-H-1B) BF16 was also faster than F16:
 F32 couldn't be measured fairly: the 5.4 GiB file is larger than that VM's 4 GB of RAM. `F16` and `F32` can
 still be requested explicitly.
 
+### Tensor type overrides: `tensor_types`
+
+Some models need single tensors kept at a higher precision. In Granite-4.0-1B, for example, the input to
+`blk.4.ffn_down` exceeds the fp16 range, so its Q4_1 and Q5_1 outputs produce garbage unless that tensor stays BF16.
+
+Paste `llama-quantize --tensor-type` values into `tensor_types`, separated by spaces, for example
+`blk\.4\.ffn_down=bf16`, `blk\.[23]\.ffn_down=bf16` or `blk\.2\.ffn_down=bf16 blk\.3\.ffn_down=bf16`:
+- Each entry is `<regex>=<type>`. The regex is searched in tensor names. The type is a ggml type such as `bf16`
+  or `q8_0` that the endian script can byte-swap; mixes like `Q4_K_M` aren't types.
+- Every `llama-quantize` call gets them as `--tensor-type` arguments. `llama-quantize` applies them only to
+  quantized outputs, so F32, F16 and BF16 files keep every tensor in their own type.
+- The **Save model card** job commits them as `models/<Model>/tensor-type.txt`, one per line, which is also the
+  `--tensor-type-file` format. Later runs of that model with `tensor_types` left empty use the file. A new value
+  replaces it. To stop using the overrides, delete the file.
+- GGUF repos are only byte-swapped, so a run with `tensor_types` set fails for them at the plan step.
+
 ### What happens
 
 1. **Plan:** a job on GitHub's free `ubuntu-slim` runner reads the repo's file list from the HF API.
@@ -62,7 +79,8 @@ still be requested explicitly.
    2. If F32/F16 were requested and any source tensor is not BF16, make them directly from the safetensors.
    3. Make a little-endian BF16 intermediate. For vision or audio models (`vision_config`/`audio_config` in
       `config.json`), also export an F16 projector, `mmproj-<Model>-BE-F16.gguf`. Then delete the safetensors.
-   4. Run `llama-quantize` once per remaining type. If every source tensor is BF16, this includes F32 and F16:
+   4. Run `llama-quantize` once per remaining type, with any [tensor type overrides](#tensor-type-overrides-tensor_types).
+      If every source tensor is BF16, this includes F32 and F16:
       the BF16 intermediate holds the source weights exactly, and `llama-quantize` is much faster than another
       `convert_hf_to_gguf.py` pass, which is mostly single-threaded and takes about 39 s per billion parameters.
       Outputs over 48 GB are split with `llama-gguf-split`.
