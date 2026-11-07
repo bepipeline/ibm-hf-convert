@@ -48,11 +48,11 @@ build/bin/llama-server -hf taronaeo/Granite-4.0-350M-BE-GGUF:Q4_K_M
 | [Granite-4.0-350M-BE-IQ4_NL.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-IQ4_NL.gguf) | IQ4_NL | 4 | 219.5M | small, good quality for its size |
 | [Granite-4.0-350M-BE-IQ4_XS.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-IQ4_XS.gguf) | IQ4_XS | 4 | 212.5M | small, good quality for its size |
 | [Granite-4.0-350M-BE-Q4_0.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q4_0.gguf) | Q4_0 | 4 | 217.9M | legacy format, prefer Q4_K_M |
-| [Granite-4.0-350M-BE-Q4_1.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q4_1.gguf) | Q4_1 | 4 | 232.8M | legacy format, prefer Q4_K_M |
+| [Granite-4.0-350M-BE-Q4_1.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q4_1.gguf) | Q4_1 | 4 | 238.3M | legacy format, prefer Q4_K_M |
 | [Granite-4.0-350M-BE-Q4_K_M.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q4_K_M.gguf) | Q4_K_M | 4 | 226.0M | medium, balanced quality - recommended |
 | [Granite-4.0-350M-BE-Q4_K_S.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q4_K_S.gguf) | Q4_K_S | 4 | 218.8M | medium, balanced quality - recommended |
 | [Granite-4.0-350M-BE-Q5_0.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q5_0.gguf) | Q5_0 | 5 | 247.6M | legacy format, prefer Q5_K_M |
-| [Granite-4.0-350M-BE-Q5_1.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q5_1.gguf) | Q5_1 | 5 | 262.5M | legacy format, prefer Q5_K_M |
+| [Granite-4.0-350M-BE-Q5_1.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q5_1.gguf) | Q5_1 | 5 | 267.5M | legacy format, prefer Q5_K_M |
 | [Granite-4.0-350M-BE-Q5_K_M.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q5_K_M.gguf) | Q5_K_M | 5 | 251.8M | large, very low quality loss - recommended |
 | [Granite-4.0-350M-BE-Q5_K_S.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q5_K_S.gguf) | Q5_K_S | 5 | 247.6M | large, very low quality loss - recommended |
 | [Granite-4.0-350M-BE-Q6_K.gguf](https://huggingface.co/taronaeo/Granite-4.0-350M-BE-GGUF/blob/main/Granite-4.0-350M-BE-Q6_K.gguf) | Q6_K | 6 | 279.2M | very large, extremely low quality loss |
