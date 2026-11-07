@@ -80,6 +80,9 @@ Paste `llama-quantize --tensor-type` values into `tensor_types`, separated by sp
    2. If F32/F16 were requested and any source tensor is not BF16, make them directly from the safetensors.
    3. Make a little-endian BF16 intermediate. For vision or audio models (`vision_config`/`audio_config` in
       `config.json`), also export an F16 projector, `mmproj-<Model>-BE-F16.gguf`. Then delete the safetensors.
+      `convert_hf_to_gguf.py --mmproj` can't export LlavaNext models (Granite Vision 3.x), so their projector goes
+      through llama.cpp's legacy `llava_surgery_v2.py` and `convert_image_encoder_to_gguf.py`, as in
+      [granitevision.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal/granitevision.md).
    4. Run `llama-quantize` once per remaining type, with any [tensor type overrides](#tensor-type-overrides-tensor_types).
       If every source tensor is BF16, this includes F32 and F16:
       the BF16 intermediate holds the source weights exactly, and `llama-quantize` is much faster than another

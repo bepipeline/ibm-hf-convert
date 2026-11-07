@@ -50,6 +50,38 @@ def converter_type_mismatches(intermediate: list[Path], out_files: list[Path], q
     return [f"{n} is {got.get(n, 'missing')}, converter writes {w.name}" for n, w in want.items() if got.get(n) != w.name]
 
 
+def llava_next_mmproj(llama_cpp: Path, src: Path, config: dict, name: str, out: Path) -> None:
+    """mmproj for LlavaNext models (Granite Vision 3.x), which convert_hf_to_gguf.py --mmproj doesn't support.
+
+    Follows llama.cpp's docs/multimodal/granitevision.md: split the SigLIP tower and projector out of the
+    safetensors, describe the tower in its own config.json, then run the legacy image encoder converter.
+    """
+    from transformers import SiglipVisionConfig
+
+    legacy = llama_cpp / "tools" / "mtmd" / "legacy-models"
+    enc = out.parent / "encoder"
+    enc.mkdir(parents=True, exist_ok=True)
+    run([sys.executable, legacy / "llava_surgery_v2.py", "-C", "-m", src])
+    (src / "llava.clip").rename(enc / "pytorch_model.bin")
+    (src / "llava.projector").rename(enc / "llava.projector")
+    # Every SiglipVisionConfig default spelled out: transformers 4.57 reads this file as a SiglipConfig, which has
+    # none of them, and 3.2's vision_config leaves out num_channels, layer_norm_eps and others.
+    (enc / "config.json").write_text(json.dumps({
+        **SiglipVisionConfig(**config["vision_config"]).to_dict(),
+        "_name_or_path": name,
+        "architectures": ["SiglipVisionModel"],
+        "image_grid_pinpoints": config["image_grid_pinpoints"],
+        "mm_patch_merge_type": "spatial_unpad",
+        "vision_feature_layer": config["vision_feature_layer"],
+    }))
+    pre = json.loads((src / "preprocessor_config.json").read_text())
+    run([sys.executable, legacy / "convert_image_encoder_to_gguf.py", "-m", enc, "--llava-projector", enc / "llava.projector",
+         "--output-dir", enc, "--clip-model-is-vision", "--clip-model-is-siglip",
+         "--image-mean", *pre["image_mean"], "--image-std", *pre["image_std"]])
+    (enc / "mmproj-model-f16.gguf").rename(out)
+    shutil.rmtree(enc)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--model", required=True, help="source repo id, e.g. Qwen/Qwen3-8B")
@@ -176,8 +208,11 @@ def main() -> None:
         try:
             with group("mmproj-F16: convert"):
                 out_dir.mkdir(parents=True, exist_ok=True)
-                run([sys.executable, convert, src, *src_format, "--mmproj", "--outtype", "f16",
-                     "--outfile", out_dir / f"mmproj-{name}-BE-F16.gguf", "--metadata", meta])
+                out = out_dir / f"mmproj-{name}-BE-F16.gguf"
+                if llava_next := next((c for c in configs if "LlavaNextForConditionalGeneration" in c.get("architectures", [])), None):
+                    llava_next_mmproj(args.llama_cpp, src, llava_next, name, out)
+                else:
+                    run([sys.executable, convert, src, *src_format, "--mmproj", "--outtype", "f16", "--outfile", out, "--metadata", meta])
         except Exception as e:
             results.skip("mmproj-F16", f"convert_hf_to_gguf.py --mmproj failed, architecture may be unsupported ({e})")
             shutil.rmtree(out_dir, ignore_errors=True)
