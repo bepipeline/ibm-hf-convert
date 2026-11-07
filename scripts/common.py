@@ -519,18 +519,24 @@ class Uploader:
                 annotate("warning", f"Upload of {path_in_repo} failed (attempt {attempt}): {e}; retrying")
                 time.sleep(30 * attempt)
 
-    def publish_card(self, work: Path) -> None:
-        """Regenerate README.md from every GGUF now in the repo (including earlier runs)."""
+    def publish_card(self, work: Path, tensor_types: list[str] | None = None) -> None:
+        """Regenerate README.md from every GGUF now in the repo (including earlier runs).
+
+        tensor_types, unless None, become the repo's tensor-type.txt in the same commit; an empty list removes it.
+        """
         from huggingface_hub.hf_api import RepoFile
 
+        own: dict[str, str | None] = {}
         if self.enabled:
-            files = [
-                (f.path, f.size) for f in self.api.list_repo_tree(self.out_repo, recursive=True)
-                if isinstance(f, RepoFile) and f.path.endswith(".gguf")
-            ]
+            tree = [f for f in self.api.list_repo_tree(self.out_repo, recursive=True) if isinstance(f, RepoFile)]
+            files = [(f.path, f.size) for f in tree if f.path.endswith(".gguf")]
+            if tensor_types == [] and any(f.path == TENSOR_TYPE_FILE for f in tree):
+                own[TENSOR_TYPE_FILE] = None
         else:
             files = self.uploaded
-        card.publish_card(self.api, self.source_repo, self.out_repo, files, work, self.enabled)
+        if tensor_types:
+            own[TENSOR_TYPE_FILE] = "\n".join(tensor_types) + "\n"
+        card.publish_card(self.api, self.source_repo, self.out_repo, files, work, self.enabled, own)
 
 
 # ---------------------------------------------------------------------------

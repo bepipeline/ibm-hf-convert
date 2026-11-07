@@ -248,12 +248,16 @@ def files_to_copy(siblings, text: str) -> list[str]:
     )
 
 
-def publish_card(api, source: str, out_repo: str, files: list[tuple[str, int]], work: Path, enabled: bool) -> Path:
+def publish_card(api, source: str, out_repo: str, files: list[tuple[str, int]], work: Path, enabled: bool,
+                 own: dict[str, str | None] | None = None) -> Path:
     """Commit README.md plus license/image files to HF in one commit, and keep the same files in `work`.
 
+    `own` holds files of this repo rather than the source's: path -> text to write, or None to delete it.
     `work` ends up mirroring the repo minus the GGUFs; the workflow saves it into this GitHub repo.
     """
-    from huggingface_hub import CommitOperationAdd, ModelCard, hf_hub_download
+    from huggingface_hub import CommitOperationAdd, CommitOperationDelete, ModelCard, hf_hub_download
+
+    own = own or {}
 
     readme = build_card(api, source, out_repo, files)
     try:
@@ -267,13 +271,18 @@ def publish_card(api, source: str, out_repo: str, files: list[tuple[str, int]], 
     for rel in extras:
         hf_hub_download(source, rel, local_dir=work)
     shutil.rmtree(work / ".cache", ignore_errors=True)
+    written = [rel for rel, content in own.items() if content is not None]
+    deleted = [rel for rel, content in own.items() if content is None]
+    for rel in written:
+        (work / rel).write_text(own[rel])
 
     if enabled:
         ops = [CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=readme.encode())]
-        ops += [CommitOperationAdd(path_in_repo=rel, path_or_fileobj=str(work / rel)) for rel in extras]
+        ops += [CommitOperationAdd(path_in_repo=rel, path_or_fileobj=str(work / rel)) for rel in extras + written]
+        ops += [CommitOperationDelete(path_in_repo=rel) for rel in deleted]
         api.create_commit(out_repo, operations=ops, commit_message="Update model card")
     else:
-        print(f"[no-upload] would commit README.md and copy {extras}")
+        print(f"[no-upload] would commit README.md, copy {extras}, write {written} and delete {deleted}")
 
     # Written only after the HF commit succeeded, so the GitHub copy never differs from HF.
     path = work / "README.md"
