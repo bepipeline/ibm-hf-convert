@@ -198,6 +198,7 @@ jobs:
           mkdir -p "$MODEL_DIR"
           cp -R "$RUNNER_TEMP/card/." "$MODEL_DIR/"
           # The planner passes the given overrides, else the ones it loaded from this file, so later runs reuse them.
+          # Safetensors cards already hold the same file (it's on HF too); this keeps it through GGUF runs.
           if [ -n "$TENSOR_TYPES" ]; then
             printf '%s\n' "$TENSOR_TYPES" | tr ' ' '\n' > "$MODEL_DIR/tensor-type.txt"
           fi

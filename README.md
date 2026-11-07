@@ -57,9 +57,10 @@ Paste `llama-quantize --tensor-type` values into `tensor_types`, separated by sp
   or `q8_0` that the endian script can byte-swap; mixes like `Q4_K_M` aren't types.
 - Every `llama-quantize` call gets them as `--tensor-type` arguments. `llama-quantize` applies them only to
   quantized outputs, so F32, F16 and BF16 files keep every tensor in their own type.
-- The **Save model card** job commits them as `models/<Model>/tensor-type.txt`, one per line, which is also the
-  `--tensor-type-file` format. Later runs of that model with `tensor_types` left empty use the file. A new value
-  replaces it. To stop using the overrides, delete the file.
+- They're saved as `tensor-type.txt`, one per line, which is also the `--tensor-type-file` format. The HF repo gets
+  it in the model card commit, and the **Save model card** job commits it here as `models/<Model>/tensor-type.txt`.
+  Later runs of that model with `tensor_types` left empty use the copy here. A new value replaces both. To stop
+  using the overrides, delete the file here; the next run removes the HF copy.
 - GGUF repos are only byte-swapped, so a run with `tensor_types` set fails for them at the plan step.
 
 ### What happens
@@ -119,7 +120,8 @@ At the end of every run, the repo's `README.md` is regenerated in one commit:
 - **Original card:** the source model's card, unchanged, after a `---` divider.
 
 The original's LICENSE/NOTICE files, images (plus any file the card links to by relative path) and
-`.eval_results/` are copied too, so card images still render.
+`.eval_results/` are copied too, so card images still render. The same commit writes the run's
+[`tensor-type.txt`](#tensor-type-overrides-tensor_types), if it has overrides.
 Any manual edits to the README are overwritten on the next run.
 
 A final **Save model card** job on `ubuntu-slim` also commits the same card to this repo as

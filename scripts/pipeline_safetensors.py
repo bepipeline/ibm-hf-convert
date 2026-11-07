@@ -83,7 +83,8 @@ def main() -> None:
     info = HfApi().model_info(args.model, files_metadata=True)
     quants = resolve_native(parse_quants(args.quants), info.safetensors)
     # Applied by llama-quantize to quantized outputs only; F32/F16/BF16 keep every tensor in that type.
-    overrides = [a for t in parse_tensor_types(args.tensor_types) for a in ("--tensor-type", t)]
+    tensor_types = parse_tensor_types(args.tensor_types)
+    overrides = [a for t in tensor_types for a in ("--tensor-type", t)]
     files = select_safetensors_files(info.siblings)
     # Converter flags shared by every convert_hf_to_gguf.py call
     src_format = ["--mistral-format"] if is_mistral_format(info.siblings) else []
@@ -230,7 +231,7 @@ def main() -> None:
 
     try:
         with group("Model card"):
-            uploader.publish_card(work / "card")
+            uploader.publish_card(work / "card", tensor_types)
     except Exception as e:
         results.fail("README.md", e)
 
