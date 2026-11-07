@@ -171,6 +171,29 @@ def parse_quants(raw: str) -> list[str]:
     return quants
 
 
+# Per-model llama-quantize --tensor-type overrides, saved as models/<Model>/tensor-type.txt and reused by later runs.
+TENSOR_TYPE_FILE = "tensor-type.txt"
+# ggml types an override may name: those gguf_convert_endian.py can byte-swap (Q4_K_M and the like are mixes, not types).
+TENSOR_OVERRIDE_TYPES = ("F32", "F16", "BF16", "Q8_0", "MXFP4", "Q6_K", "Q5_1", "Q5_K", "Q5_0", "Q4_1", "Q4_K", "Q4_0",
+                         "IQ4_NL", "IQ4_XS", "Q3_K", "Q2_K", "Q2_0", "TQ2_0", "TQ1_0", "Q1_0")
+
+
+def parse_tensor_types(raw: str) -> list[str]:
+    """'blk\\.[23]\\.ffn_down=bf16 ...' -> one llama-quantize --tensor-type value per entry.
+
+    Entries are separated by spaces or newlines, like a --tensor-type-file. llama-quantize splits each at the first
+    '=' into a regex searched in tensor names and a ggml type.
+    """
+    entries: list[str] = []
+    for e in raw.split():
+        pattern, _, qtype = e.partition("=")
+        if not pattern or qtype.upper() not in TENSOR_OVERRIDE_TYPES:
+            raise ValueError(f"Invalid tensor type override '{e}'; expected <regex>=<type> with type one of {', '.join(TENSOR_OVERRIDE_TYPES)}")
+        if e not in entries:
+            entries.append(e)
+    return entries
+
+
 # ---------------------------------------------------------------------------
 # Repo file selection (shared by plan.py and the pipelines so both agree)
 # ---------------------------------------------------------------------------
