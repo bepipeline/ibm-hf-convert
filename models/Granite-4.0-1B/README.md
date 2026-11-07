@@ -41,14 +41,14 @@ build/bin/llama-server -hf taronaeo/Granite-4.0-1B-BE-GGUF:Q4_K_M
 
 | Name | Quant Method | Bits | Size | Use Case |
 |---|---|---|---|---|
-| [Granite-4.0-1B-BE-Q2_K.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q2_K.gguf) | Q2_K | 2 | 669.2M | smallest K-quant, significant quality loss |
+| [Granite-4.0-1B-BE-Q2_K.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q2_K.gguf) | Q2_K | 2 | 681.8M | smallest K-quant, significant quality loss |
 | [Granite-4.0-1B-BE-Q3_K_L.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q3_K_L.gguf) | Q3_K_L | 3 | 883.3M | very small, high quality loss |
 | [Granite-4.0-1B-BE-Q3_K_M.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q3_K_M.gguf) | Q3_K_M | 3 | 820.5M | very small, high quality loss |
 | [Granite-4.0-1B-BE-Q3_K_S.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q3_K_S.gguf) | Q3_K_S | 3 | 749.2M | very small, high quality loss |
 | [Granite-4.0-1B-BE-IQ4_NL.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-IQ4_NL.gguf) | IQ4_NL | 4 | 939.8M | small, good quality for its size |
 | [Granite-4.0-1B-BE-IQ4_XS.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-IQ4_XS.gguf) | IQ4_XS | 4 | 899.8M | small, good quality for its size |
 | [Granite-4.0-1B-BE-Q4_0.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q4_0.gguf) | Q4_0 | 4 | 929.8M | legacy format, prefer Q4_K_M |
-| [Granite-4.0-1B-BE-Q4_1.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q4_1.gguf) | Q4_1 | 4 | 1014.8M | legacy format, prefer Q4_K_M |
+| [Granite-4.0-1B-BE-Q4_1.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q4_1.gguf) | Q4_1 | 4 | 1.0G | legacy format, prefer Q4_K_M |
 | [Granite-4.0-1B-BE-Q4_K_M.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q4_K_M.gguf) | Q4_K_M | 4 | 976.2M | medium, balanced quality - recommended |
 | [Granite-4.0-1B-BE-Q4_K_S.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q4_K_S.gguf) | Q4_K_S | 4 | 935.3M | medium, balanced quality - recommended |
 | [Granite-4.0-1B-BE-Q5_0.gguf](https://huggingface.co/taronaeo/Granite-4.0-1B-BE-GGUF/blob/main/Granite-4.0-1B-BE-Q5_0.gguf) | Q5_0 | 5 | 1.1G | legacy format, prefer Q5_K_M |
