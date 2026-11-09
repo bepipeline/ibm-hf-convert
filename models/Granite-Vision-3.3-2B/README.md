@@ -41,7 +41,7 @@ build/bin/llama-server -hf taronaeo/Granite-Vision-3.3-2B-BE-GGUF:Q4_K_M
 
 | Name | Quant Method | Bits | Size | Use Case |
 |---|---|---|---|---|
-| [Granite-Vision-3.3-2B-BE-Q2_K.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q2_K.gguf) | Q2_K | 2 | 932.9M | smallest K-quant, significant quality loss |
+| [Granite-Vision-3.3-2B-BE-Q2_K.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q2_K.gguf) | Q2_K | 2 | 958.1M | smallest K-quant, significant quality loss |
 | [Granite-Vision-3.3-2B-BE-Q3_K_L.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q3_K_L.gguf) | Q3_K_L | 3 | 1.3G | very small, high quality loss |
 | [Granite-Vision-3.3-2B-BE-Q3_K_M.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q3_K_M.gguf) | Q3_K_M | 3 | 1.2G | very small, high quality loss |
 | [Granite-Vision-3.3-2B-BE-Q3_K_S.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q3_K_S.gguf) | Q3_K_S | 3 | 1.1G | very small, high quality loss |
@@ -49,16 +49,17 @@ build/bin/llama-server -hf taronaeo/Granite-Vision-3.3-2B-BE-GGUF:Q4_K_M
 | [Granite-Vision-3.3-2B-BE-IQ4_XS.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-IQ4_XS.gguf) | IQ4_XS | 4 | 1.3G | small, good quality for its size |
 | [Granite-Vision-3.3-2B-BE-Q4_0.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q4_0.gguf) | Q4_0 | 4 | 1.4G | legacy format, prefer Q4_K_M |
 | [Granite-Vision-3.3-2B-BE-Q4_1.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q4_1.gguf) | Q4_1 | 4 | 1.5G | legacy format, prefer Q4_K_M |
-| [Granite-Vision-3.3-2B-BE-Q4_K_M.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q4_K_M.gguf) | Q4_K_M | 4 | 1.4G | medium, balanced quality - recommended |
+| [Granite-Vision-3.3-2B-BE-Q4_K_M.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q4_K_M.gguf) | Q4_K_M | 4 | 1.5G | medium, balanced quality - recommended |
 | [Granite-Vision-3.3-2B-BE-Q4_K_S.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q4_K_S.gguf) | Q4_K_S | 4 | 1.4G | medium, balanced quality - recommended |
-| [Granite-Vision-3.3-2B-BE-Q5_0.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q5_0.gguf) | Q5_0 | 5 | 1.6G | legacy format, prefer Q5_K_M |
+| [Granite-Vision-3.3-2B-BE-Q5_0.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q5_0.gguf) | Q5_0 | 5 | 1.7G | legacy format, prefer Q5_K_M |
 | [Granite-Vision-3.3-2B-BE-Q5_1.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q5_1.gguf) | Q5_1 | 5 | 1.8G | legacy format, prefer Q5_K_M |
 | [Granite-Vision-3.3-2B-BE-Q5_K_M.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q5_K_M.gguf) | Q5_K_M | 5 | 1.7G | large, very low quality loss - recommended |
-| [Granite-Vision-3.3-2B-BE-Q5_K_S.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q5_K_S.gguf) | Q5_K_S | 5 | 1.6G | large, very low quality loss - recommended |
-| [Granite-Vision-3.3-2B-BE-Q6_K.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q6_K.gguf) | Q6_K | 6 | 1.9G | very large, extremely low quality loss |
+| [Granite-Vision-3.3-2B-BE-Q5_K_S.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q5_K_S.gguf) | Q5_K_S | 5 | 1.7G | large, very low quality loss - recommended |
+| [Granite-Vision-3.3-2B-BE-Q6_K.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q6_K.gguf) | Q6_K | 6 | 2.0G | very large, extremely low quality loss |
 | [Granite-Vision-3.3-2B-BE-Q8_0.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-Q8_0.gguf) | Q8_0 | 8 | 2.5G | very large, extremely low quality loss |
 | [Granite-Vision-3.3-2B-BE-BF16.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-BF16.gguf) | BF16 | 16 | 4.7G | half precision, effectively lossless |
 | [Granite-Vision-3.3-2B-BE-F16.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-F16.gguf) | F16 | 16 | 4.7G | half precision, effectively lossless |
+| [mmproj-Granite-Vision-3.3-2B-BE-F16.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/mmproj-Granite-Vision-3.3-2B-BE-F16.gguf) | mmproj-F16 | 16 | 851.2M | multimodal projector |
 | [Granite-Vision-3.3-2B-BE-F32.gguf](https://huggingface.co/taronaeo/Granite-Vision-3.3-2B-BE-GGUF/blob/main/Granite-Vision-3.3-2B-BE-F32.gguf) | F32 | 32 | 9.4G | full precision, largest |
 
 ---
